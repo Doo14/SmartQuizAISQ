@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+:root {
+  /* FictionSaaS exact palette */
+  --background: #f5f5f0;
+  --foreground: #1a1a1a;
+  --surface: #ffffff;
+  --surface-cream: #FCEBD4;
+  --header-bg: #064E3B;
+  --border: #1a1a1a;
+
+  /* Primary = green (buttons, accents) */
+  --primary: #166534;
+  --primary-light: #16A34A;
+  --primary-surface: #D4F5E9;
+
+  /* Accent = orange (highlights) */
+  --accent: #D4860A;
+  --accent-surface: #FFF3CD;
+
+  /* Danger = red */
+  --danger: #DC2626;
+  --danger-surface: #FFD6DD;
+
+  /* Shadows with color */
+  --shadow-dark: 5px 5px 0 #1a1a1a;
+  --shadow-dark-sm: 3px 3px 0 #1a1a1a;
+  --shadow-green: 5px 5px 0 #166534;
+  --shadow-orange: 5px 5px 0 #D4860A;
+  --shadow-red: 5px 5px 0 #DC2626;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-header-bg: var(--header-bg);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  color-scheme: light;
+}
+
+/* Layout helpers */
+.container-app {
+  @apply mx-auto w-full max-w-6xl px-4 sm:px-6;
+}
+
+/* Neo-brutalism cards — white bg, thick border, colored shadow */
+.brutal-card {
+  @apply border-2 border-[color:var(--border)] bg-white rounded-2xl;
+  box-shadow: var(--shadow-dark);
+}
+
+.brutal-card-green {
+  @apply border-2 border-[color:var(--border)] bg-white rounded-2xl;
+  box-shadow: var(--shadow-green);
+}
+
+.brutal-card-orange {
+  @apply border-2 border-[color:var(--border)] bg-white rounded-2xl;
+  box-shadow: var(--shadow-orange);
+}
+
+.brutal-card-red {
+  @apply border-2 border-[color:var(--border)] bg-white rounded-2xl;
+  box-shadow: var(--shadow-red);
+}
+
+/* Backward compat aliases */
+.glass-panel {
+  @apply border-2 border-[color:var(--border)] bg-white rounded-2xl;
+  box-shadow: var(--shadow-dark);
+}
+
+.glass-panel-soft {
+  @apply border-2 border-[color:var(--border)] bg-white rounded-xl;
+  box-shadow: var(--shadow-dark-sm);
+}
+
+.bento-grid {
+  @apply grid gap-4 sm:grid-cols-2 lg:grid-cols-3;
+}
+
+.page-stack {
+  @apply grid gap-6;
+}
+
+.section-head {
+  @apply border-2 border-[color:var(--border)] bg-[color:var(--surface-cream)] rounded-2xl px-4 py-4 sm:px-5;
+  box-shadow: var(--shadow-dark);
+}
