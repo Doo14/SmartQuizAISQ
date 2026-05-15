@@ -1,35 +1,37 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SkeletonGrid } from "@/components/ui/skeleton";
-import { listExams, listRooms, listAttempts, listViolations } from "@/lib/demo-store";
+import { useAuth } from "@/lib/auth-context";
+import { getTeacherStats, type TeacherStats } from "@/lib/api";
 
 export default function TeacherDashboardPage() {
-  const [mounted, setMounted] = useState(false);
-  const [stats, setStats] = useState({ exams: 0, rooms: 0, attempts: 0, violations: 0 });
+  const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
+  const [stats, setStats] = useState<TeacherStats | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const load = () => {
-      setStats({
-        exams: listExams().length,
-        rooms: listRooms().length,
-        attempts: listAttempts().length,
-        violations: listViolations().length,
-      });
-    };
-    load();
-    setMounted(true);
-    window.addEventListener("storage", load);
-    window.addEventListener("focus", load);
-    return () => {
-      window.removeEventListener("storage", load);
-      window.removeEventListener("focus", load);
-    };
-  }, []);
+    if (authLoading) return;
+    if (!user) {
+      router.push("/login");
+      return;
+    }
+    if (user.role !== "teacher") {
+      router.push("/student");
+      return;
+    }
+
+    getTeacherStats()
+      .then(setStats)
+      .catch(() => setStats({ totalExams: 0, totalAttempts: 0, totalViolations: 0, violationRate: 0 }))
+      .finally(() => setLoading(false));
+  }, [user, authLoading, router]);
 
   return (
     <AppShell
@@ -46,9 +48,11 @@ export default function TeacherDashboardPage() {
         <div className="section-head flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-black text-zinc-900">Tổng quan</h1>
-            <p className="mt-1 text-sm text-zinc-600">
-              Xem nhanh thống kê đề thi, phòng thi, và vi phạm.
-            </p>
+            {user && (
+              <p className="mt-1 text-sm text-zinc-600">
+                Xin chào, <span className="font-bold">{user.username}</span>! Xem nhanh thống kê đề thi, lượt thi, và vi phạm.
+              </p>
+            )}
           </div>
           <div className="flex gap-2">
             <ButtonLink href="/teacher/exams/new">Tạo đề</ButtonLink>
@@ -58,35 +62,35 @@ export default function TeacherDashboardPage() {
           </div>
         </div>
 
-        {!mounted ? (
+        {loading || !stats ? (
           <SkeletonGrid count={4} cols={2} />
         ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Card title="Đề thi" shadow="green">
-            <div className="flex items-end justify-between">
-              <div className="text-3xl font-black text-zinc-900">{stats.exams}</div>
-              <Badge>tổng</Badge>
-            </div>
-          </Card>
-          <Card title="Phòng thi" shadow="orange">
-            <div className="flex items-end justify-between">
-              <div className="text-3xl font-black text-zinc-900">{stats.rooms}</div>
-              <Badge variant="success">rooms</Badge>
-            </div>
-          </Card>
-          <Card title="Lượt thi" shadow="dark">
-            <div className="flex items-end justify-between">
-              <div className="text-3xl font-black text-zinc-900">{stats.attempts}</div>
-              <Badge variant="success">attempts</Badge>
-            </div>
-          </Card>
-          <Card title="Vi phạm" shadow="red">
-            <div className="flex items-end justify-between">
-              <div className="text-3xl font-black text-zinc-900">{stats.violations}</div>
-              <Badge variant="warning">anti-cheat</Badge>
-            </div>
-          </Card>
-        </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Card title="Đề thi" shadow="green">
+              <div className="flex items-end justify-between">
+                <div className="text-3xl font-black text-zinc-900">{stats.totalExams}</div>
+                <Badge>tổng</Badge>
+              </div>
+            </Card>
+            <Card title="Lượt thi" shadow="orange">
+              <div className="flex items-end justify-between">
+                <div className="text-3xl font-black text-zinc-900">{stats.totalAttempts}</div>
+                <Badge variant="success">attempts</Badge>
+              </div>
+            </Card>
+            <Card title="Vi phạm" shadow="red">
+              <div className="flex items-end justify-between">
+                <div className="text-3xl font-black text-zinc-900">{stats.totalViolations}</div>
+                <Badge variant="warning">anti-cheat</Badge>
+              </div>
+            </Card>
+            <Card title="Tỷ lệ vi phạm" shadow="dark">
+              <div className="flex items-end justify-between">
+                <div className="text-3xl font-black text-zinc-900">{stats.violationRate}%</div>
+                <Badge>rate</Badge>
+              </div>
+            </Card>
+          </div>
         )}
 
         <Card
