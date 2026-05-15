@@ -1,387 +1,347 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { SkeletonGrid } from "@/components/ui/skeleton";
+import { useAuth } from "@/lib/auth-context";
 import {
-  listAttempts,
-  listViolations,
-  type DemoAttempt,
-  type DemoViolation,
-  type ViolationType,
-} from "@/lib/demo-store";
+  listExams,
+  getRoomsByExam,
+  getRoomDetail,
+  getViolationsByAttempt,
+  getViolationLabel,
+  type Exam,
+  type AttemptSummary,
+  type ViolationDetail,
+} from "@/lib/api";
 
-const VIOLATION_LABEL: Record<ViolationType, string> = {
-  tab_switch: "Tab switch",
-  keyboard_copy: "Copy",
-  keyboard_paste: "Paste",
-  camera_multiple_faces: "Multiple faces",
-  camera_gaze_away: "Gaze away",
-  camera_missing: "Camera missing",
+const TEACHER_NAV = [
+  { href: "/teacher", label: "Tổng quan" },
+  { href: "/teacher/exams", label: "Danh sách đề" },
+  { href: "/teacher/exams/new", label: "Tạo đề mới", badge: "Excel/Manual/AI" },
+  { href: "/teacher/results", label: "Kết quả & Vi phạm" },
+];
+
+type AttemptRow = AttemptSummary & {
+  examTitle: string;
+  roomCode: string;
+  roomId: number;
 };
 
-const VIOLATION_COLOR: Record<ViolationType, "warning" | "danger"> = {
-  tab_switch: "warning",
-  keyboard_copy: "warning",
-  keyboard_paste: "warning",
-  camera_multiple_faces: "danger",
-  camera_gaze_away: "warning",
-  camera_missing: "danger",
-};
+function violationIcon(type: string): string {
+  const key = type.toUpperCase().replace(/-/g, "_");
+  const icons: Record<string, string> = {
+    TAB_SWITCH: "🔄",
+    KEYBOARD_COPY: "📋",
+    KEYBOARD_PASTE: "📥",
+    CAMERA_MULTIPLE_FACES: "👥",
+    CAMERA_GAZE_AWAY: "👀",
+    CAMERA_MISSING: "📷",
+    OTHER: "⚠️",
+  };
+  return icons[key] ?? "⚠️";
+}
 
 export default function TeacherResultsPage() {
-  const [selectedExamCode, setSelectedExamCode] = useState<string>("all");
-  const [selectedType, setSelectedType] = useState<ViolationType | "all">("all");
-  const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
+  const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
 
-  const attempts = listAttempts();
-  const violations = listViolations();
+  const [loading, setLoading] = useState(true);
+  const [attempts, setAttempts] = useState<AttemptRow[]>([]);
+  const [selectedExamId, setSelectedExamId] = useState<number | "all">("all");
+  const [selectedAttemptId, setSelectedAttemptId] = useState<number | null>(null);
+  const [exams, setExams] = useState<Exam[]>([]);
+  const [violations, setViolations] = useState<ViolationDetail[]>([]);
+  const [violationsLoading, setViolationsLoading] = useState(false);
 
-  const examCodes = useMemo(() => {
-    const set = new Set(attempts.map((a) => a.examCode).filter(Boolean));
-    return Array.from(set).sort();
-  }, [attempts]);
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) { router.push("/login"); return; }
+    if (user.role !== "teacher") { router.push("/student"); return; }
+
+    const loadAll = async () => {
+      try {
+        const { exams: examList } = await listExams();
+        setExams(examList);
+
+        const allAttempts: AttemptRow[] = [];
+        for (const exam of examList) {
+          const rooms = await getRoomsByExam(exam.id).catch(() => []);
+          for (const room of rooms) {
+            if (room.attemptCount && room.attemptCount > 0) {
+              try {
+                const detail = await getRoomDetail(room.id);
+                for (const att of detail.attempts) {
+                  allAttempts.push({
+                    ...att,
+                    examTitle: exam.title,
+                    roomCode: room.code,
+                    roomId: room.id,
+                  });
+                }
+              } catch {
+                // skip
+              }
+            }
+          }
+        }
+        setAttempts(allAttempts);
+      } catch {
+        setAttempts([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadAll();
+  }, [user, authLoading, router]);
 
   const filteredAttempts = useMemo(() => {
-    return attempts.filter((a) =>
-      selectedExamCode === "all" ? true : a.examCode === selectedExamCode
-    );
-  }, [attempts, selectedExamCode]);
+    if (selectedExamId === "all") return attempts;
+    return attempts.filter((a) => {
+      const exam = exams.find((e) => e.title === a.examTitle);
+      return exam?.id === selectedExamId;
+    });
+  }, [attempts, selectedExamId, exams]);
 
-  const filteredViolations = useMemo(() => {
-    const byAttempt = selectedAttemptId
-      ? violations.filter((v) => v.attemptId === selectedAttemptId)
-      : [];
-    return byAttempt.filter((v) =>
-      selectedType === "all" ? true : v.type === selectedType
-    );
-  }, [violations, selectedAttemptId, selectedType]);
+  const selected = selectedAttemptId !== null
+    ? attempts.find((a) => a.id === selectedAttemptId) ?? null
+    : null;
 
-  const selectedAttempt: DemoAttempt | undefined = useMemo(() => {
-    if (!selectedAttemptId) return undefined;
-    return attempts.find((a) => a.id === selectedAttemptId);
-  }, [attempts, selectedAttemptId]);
+  useEffect(() => {
+    if (!selectedAttemptId) {
+      setViolations([]);
+      return;
+    }
+    let cancelled = false;
+    setViolationsLoading(true);
+    getViolationsByAttempt(selectedAttemptId).then((list) => {
+      if (!cancelled) {
+        setViolations(list);
+        setViolationsLoading(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAttemptId]);
+
+  const totalViolations = filteredAttempts.reduce((s, a) => s + (a.violationCount ?? 0), 0);
+  const avgCorrect = filteredAttempts.length > 0
+    ? (filteredAttempts.reduce((s, a) => s + a.correctCount, 0) / filteredAttempts.length).toFixed(1)
+    : "—";
 
   return (
-    <AppShell
-      title="Teacher Dashboard"
-      subtitle="Kết quả & Vi phạm"
-      nav={[
-        { href: "/teacher", label: "Tổng quan" },
-        { href: "/teacher/exams", label: "Danh sách đề" },
-        { href: "/teacher/exams/new", label: "Tạo đề mới", badge: "Excel/Manual/AI" },
-        { href: "/teacher/results", label: "Kết quả & Vi phạm" },
-      ]}
-    >
+    <AppShell title="Teacher Dashboard" subtitle="Kết quả & Vi phạm" nav={TEACHER_NAV}>
       <div className="page-stack">
-        {/* ── Page header ── */}
         <div className="section-head flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-black text-zinc-900">Kết quả & Vi phạm</h1>
-            <p className="mt-1 text-sm text-zinc-600">
-              Demo data lấy từ localStorage khi student nộp bài. Chọn attempt để xem
-              drill-down violation logs.
-            </p>
+            <p className="mt-1 text-sm text-zinc-600">Xem chi tiết kết quả bài thi và vi phạm của học viên.</p>
           </div>
-          <Badge variant="success">drill-down</Badge>
         </div>
 
-        {/* ── Filters ── */}
-        <Card title="Bộ lọc">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <label className="grid gap-1.5 text-sm">
-              <span className="font-bold text-zinc-900">Exam code</span>
-              <select
-                className="h-11 rounded-xl border-2 border-[color:var(--border)] bg-white px-3 text-sm text-zinc-900 shadow-[3px_3px_0_#1a1a1a] outline-none focus:shadow-[1px_1px_0_#1a1a1a] focus:ring-2 focus:ring-[color:var(--primary)]/20 transition-all"
-                value={selectedExamCode}
-                onChange={(e) => {
-                  setSelectedExamCode(e.target.value);
-                  setSelectedAttemptId(null);
-                }}
-              >
-                <option value="all">Tất cả</option>
-                {examCodes.map((code) => (
-                  <option key={code} value={code}>
-                    {code}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="grid gap-1.5 text-sm">
-              <span className="font-bold text-zinc-900">Violation type</span>
-              <select
-                className="h-11 rounded-xl border-2 border-[color:var(--border)] bg-white px-3 text-sm text-zinc-900 shadow-[3px_3px_0_#1a1a1a] outline-none focus:shadow-[1px_1px_0_#1a1a1a] focus:ring-2 focus:ring-[color:var(--primary)]/20 transition-all"
-                value={selectedType}
-                onChange={(e) => setSelectedType(e.target.value as ViolationType | "all")}
-                disabled={!selectedAttemptId}
-              >
-                <option value="all">Tất cả</option>
-                {Object.entries(VIOLATION_LABEL).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-        </Card>
-
-        {/* ── Attempts table — full width ── */}
-        <Card
-          title="Attempts"
-          description="Click nút Xem để drill-down violation logs của attempt đó"
-          right={
-            <span className="text-xs font-semibold text-zinc-500">
-              {filteredAttempts.length} kết quả
-            </span>
-          }
-        >
-          {filteredAttempts.length === 0 ? (
-            <div className="rounded-xl border-2 border-dashed border-zinc-300 px-6 py-10 text-center text-sm text-zinc-500">
-              Chưa có attempt nào. Hãy vào{" "}
-              <span className="font-bold text-zinc-800">/student/join</span> làm bài và
-              nộp để tạo demo data.
-            </div>
-          ) : (
-            <div className="overflow-x-auto rounded-xl border-2 border-zinc-200 bg-zinc-50">
-              <table className="w-full min-w-[640px] text-sm">
-                <thead>
-                  <tr className="border-b-2 border-zinc-200 bg-zinc-100 text-left text-xs font-bold uppercase tracking-wide text-zinc-500">
-                    <th className="px-4 py-3">Bài thi</th>
-                    <th className="px-4 py-3">Student</th>
-                    <th className="px-4 py-3 text-center">Score</th>
-                    <th className="px-4 py-3 text-center">Vi phạm</th>
-                    <th className="px-4 py-3">Nộp lúc</th>
-                    <th className="px-4 py-3"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredAttempts.map((a) => {
-                    const active = a.id === selectedAttemptId;
-                    return (
-                      <tr
-                        key={a.id}
-                        className={[
-                          "border-b border-zinc-200 transition-colors",
-                          active
-                            ? "bg-emerald-50 ring-2 ring-inset ring-emerald-400"
-                            : "hover:bg-white",
-                        ].join(" ")}
-                      >
-                        {/* Bài thi */}
-                        <td className="px-4 py-3">
-                          <div className="font-bold text-zinc-900">{a.examTitle}</div>
-                          <div className="mt-0.5 text-xs text-zinc-400">
-                            Mã: {a.examCode}
-                          </div>
-                        </td>
-
-                        {/* Student */}
-                        <td className="px-4 py-3">
-                          <span className="block max-w-[180px] truncate text-zinc-700">
-                            {a.studentEmail}
-                          </span>
-                        </td>
-
-                        {/* Score */}
-                        <td className="px-4 py-3 text-center">
-                          <span
-                            className={[
-                              "inline-flex items-center justify-center rounded-full border-2 px-3 py-1 text-sm font-black",
-                              a.score >= 8
-                                ? "border-emerald-500 bg-emerald-50 text-emerald-700"
-                                : a.score >= 5
-                                ? "border-amber-500 bg-amber-50 text-amber-700"
-                                : "border-red-500 bg-red-50 text-red-700",
-                            ].join(" ")}
-                          >
-                            {a.score.toFixed(1)}
-                          </span>
-                        </td>
-
-                        {/* Vi phạm */}
-                        <td className="px-4 py-3 text-center">
-                          {a.violationCount > 0 ? (
-                            <span className="inline-flex items-center gap-1 rounded-full border-2 border-amber-500 bg-amber-50 px-3 py-1 text-sm font-bold text-amber-700">
-                              ⚠ {a.violationCount}
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center rounded-full border-2 border-zinc-300 bg-zinc-100 px-3 py-1 text-sm font-semibold text-zinc-500">
-                              0
-                            </span>
-                          )}
-                        </td>
-
-                        {/* Nộp lúc */}
-                        <td className="px-4 py-3 text-xs text-zinc-500">
-                          {a.submittedAt
-                            ? new Date(a.submittedAt).toLocaleString("vi-VN")
-                            : "—"}
-                        </td>
-
-                        {/* Action */}
-                        <td className="px-4 py-3">
-                          <Button
-                            type="button"
-                            variant={active ? "primary" : "secondary"}
-                            onClick={() =>
-                              setSelectedAttemptId(active ? null : a.id)
-                            }
-                          >
-                            {active ? "Đóng" : "Xem"}
-                          </Button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
-
-        {/* ── Drill-down panel — full width, below Attempts ── */}
-        {selectedAttempt ? (
-          <Card
-            title="Drill-down — Chi tiết attempt"
-            description={`Student: ${selectedAttempt.studentEmail}`}
-            right={<Badge variant="success">selected</Badge>}
-            shadow="green"
-          >
-            {/* Two-column layout: summary left | violation logs right */}
-            <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-              {/* Left: summary stats */}
-              <div className="flex flex-col gap-3">
-                <div className="rounded-xl border-2 border-zinc-200 bg-zinc-50 p-4">
-                  <div className="mb-3 text-xs font-bold uppercase tracking-wide text-zinc-400">
-                    Thông tin attempt
-                  </div>
-                  <dl className="grid gap-2.5 text-sm">
-                    <div className="flex items-start justify-between gap-2">
-                      <dt className="text-zinc-500">Student</dt>
-                      <dd className="max-w-[150px] break-all text-right font-semibold text-zinc-800">
-                        {selectedAttempt.studentEmail}
-                      </dd>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <dt className="text-zinc-500">Điểm số</dt>
-                      <dd>
-                        <span
-                          className={[
-                            "inline-flex items-center justify-center rounded-full border-2 px-3 py-1 text-base font-black",
-                            selectedAttempt.score >= 8
-                              ? "border-emerald-500 bg-emerald-50 text-emerald-700"
-                              : selectedAttempt.score >= 5
-                              ? "border-amber-500 bg-amber-50 text-amber-700"
-                              : "border-red-500 bg-red-50 text-red-700",
-                          ].join(" ")}
-                        >
-                          {selectedAttempt.score.toFixed(1)} / 10
-                        </span>
-                      </dd>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <dt className="text-zinc-500">Vi phạm</dt>
-                      <dd>
-                        {selectedAttempt.violationCount > 0 ? (
-                          <span className="inline-flex items-center gap-1 rounded-full border-2 border-amber-500 bg-amber-50 px-3 py-1 text-sm font-bold text-amber-700">
-                            ⚠ {selectedAttempt.violationCount} lần
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center rounded-full border-2 border-emerald-400 bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">
-                            ✓ Không vi phạm
-                          </span>
-                        )}
-                      </dd>
-                    </div>
-                    <div className="flex items-center justify-between gap-2 border-t border-zinc-200 pt-2.5">
-                      <dt className="text-zinc-500">Bắt đầu</dt>
-                      <dd className="text-xs text-zinc-600">
-                        {new Date(selectedAttempt.startedAt).toLocaleString("vi-VN")}
-                      </dd>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <dt className="text-zinc-500">Nộp bài</dt>
-                      <dd className="text-xs text-zinc-600">
-                        {selectedAttempt.submittedAt
-                          ? new Date(selectedAttempt.submittedAt).toLocaleString("vi-VN")
-                          : "—"}
-                      </dd>
-                    </div>
-                  </dl>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setSelectedAttemptId(null)}
-                  className="rounded-xl border-2 border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-600 shadow-[2px_2px_0_#d4d4d8] transition-all hover:shadow-none hover:bg-zinc-50"
-                >
-                  ✕ Đóng drill-down
-                </button>
-              </div>
-
-              {/* Right: violation logs */}
-              <div>
-                <div className="mb-3 flex items-center justify-between">
-                  <div className="text-sm font-bold text-zinc-900">
-                    Violation Logs
-                    <span className="ml-2 text-xs font-normal text-zinc-400">
-                      ({filteredViolations.length} bản ghi)
-                    </span>
-                  </div>
-                </div>
-
-                {filteredViolations.length === 0 ? (
-                  <div className="rounded-xl border-2 border-dashed border-zinc-300 px-6 py-10 text-center text-sm text-zinc-500">
-                    Không có violation log nào.
-                    {selectedAttempt.violationCount === 0
-                      ? " Student không vi phạm."
-                      : " Thử thay đổi filter Violation type."}
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto rounded-xl border-2 border-zinc-200 bg-zinc-50">
-                    <table className="w-full min-w-[480px] text-sm">
-                      <thead>
-                        <tr className="border-b-2 border-zinc-200 bg-zinc-100 text-left text-xs font-bold uppercase tracking-wide text-zinc-500">
-                          <th className="px-4 py-3 w-32">Thời gian</th>
-                          <th className="px-4 py-3 w-40">Loại vi phạm</th>
-                          <th className="px-4 py-3">Mô tả</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredViolations.map((v: DemoViolation) => (
-                          <tr
-                            key={v.id}
-                            className="border-b border-zinc-200 hover:bg-white transition-colors"
-                          >
-                            <td className="px-4 py-3 text-xs text-zinc-500 whitespace-nowrap">
-                              {new Date(v.createdAt).toLocaleTimeString("vi-VN")}
-                            </td>
-                            <td className="px-4 py-3">
-                              <Badge variant={VIOLATION_COLOR[v.type]}>
-                                {VIOLATION_LABEL[v.type]}
-                              </Badge>
-                            </td>
-                            <td className="px-4 py-3 text-zinc-700">{v.description}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            </div>
+        {/* Stats */}
+        <div className="bento-grid">
+          <Card title="Tổng attempts" shadow="green">
+            <div className="text-3xl font-black text-zinc-900">{filteredAttempts.length}</div>
           </Card>
-        ) : (
-          /* Placeholder khi chưa chọn attempt */
-          <div className="rounded-2xl border-2 border-dashed border-zinc-300 px-6 py-8 text-center text-sm text-zinc-400">
-            <div className="mb-1 text-2xl">👆</div>
-            Chọn một attempt ở bảng trên để xem chi tiết vi phạm
+          <Card title="Vi phạm" shadow="red">
+            <div className="text-3xl font-black text-zinc-900">{totalViolations}</div>
+          </Card>
+          <Card title="Câu đúng TB" shadow="orange">
+            <div className="text-3xl font-black text-zinc-900">{avgCorrect}</div>
+          </Card>
+        </div>
+
+        {/* Filter */}
+        <Card title="Lọc theo đề thi">
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setSelectedExamId("all")}
+              className={[
+                "rounded-xl border-2 border-[color:var(--border)] px-4 py-2 text-sm font-bold transition-all",
+                selectedExamId === "all"
+                  ? "bg-[color:var(--primary)] text-white shadow-[3px_3px_0_#1a1a1a]"
+                  : "bg-white text-zinc-700 shadow-[2px_2px_0_#1a1a1a] hover:shadow-[4px_4px_0_#1a1a1a]",
+              ].join(" ")}
+            >
+              Tất cả
+            </button>
+            {exams.map((e) => (
+              <button
+                key={e.id}
+                onClick={() => setSelectedExamId(e.id)}
+                className={[
+                  "rounded-xl border-2 border-[color:var(--border)] px-4 py-2 text-sm font-bold transition-all",
+                  selectedExamId === e.id
+                    ? "bg-[color:var(--primary)] text-white shadow-[3px_3px_0_#1a1a1a]"
+                    : "bg-white text-zinc-700 shadow-[2px_2px_0_#1a1a1a] hover:shadow-[4px_4px_0_#1a1a1a]",
+                ].join(" ")}
+              >
+                {e.title}
+              </button>
+            ))}
           </div>
-        )}
+        </Card>
+
+        {/* Attempts list + detail */}
+        <div className="grid gap-4 lg:grid-cols-[1fr_420px]">
+          <Card
+            title="Danh sách bài thi"
+            description={`${filteredAttempts.length} attempts`}
+          >
+            {loading ? (
+              <SkeletonGrid count={3} cols={1} />
+            ) : filteredAttempts.length === 0 ? (
+              <EmptyState
+                icon="📊"
+                title="Chưa có dữ liệu"
+                description="Chưa có học viên nào nộp bài trong phòng thi này."
+                action={{ href: "/teacher/exams", label: "Xem đề thi", variant: "secondary" }}
+              />
+            ) : (
+              <div className="grid gap-2">
+                {filteredAttempts.map((a) => {
+                  const isSelected = selectedAttemptId === a.id;
+                  const passed = a.correctCount >= 5;
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => setSelectedAttemptId(a.id)}
+                      className={[
+                        "flex items-center gap-3 rounded-xl border-2 border-[color:var(--border)] px-4 py-3 text-left transition-all",
+                        isSelected
+                          ? "bg-[color:var(--surface-mint)] shadow-[2px_2px_0_#166534]"
+                          : "bg-white shadow-[3px_3px_0_#1a1a1a] hover:shadow-[5px_5px_0_#1a1a1a]",
+                      ].join(" ")}
+                    >
+                      <div className={[
+                        "grid h-9 w-9 shrink-0 place-items-center rounded-xl border-2 border-[color:var(--border)] text-sm font-black",
+                        passed ? "bg-[color:var(--surface-mint)]" : "bg-[#FFD6DD]",
+                      ].join(" ")}>
+                        {a.correctCount}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-sm font-bold text-zinc-900">
+                            {a.username ?? `Student #${a.studentId}`}
+                          </span>
+                          {a.violationCount > 0 && (
+                            <Badge variant="danger">{a.violationCount} vi phạm</Badge>
+                          )}
+                        </div>
+                        <div className="mt-0.5 text-xs text-zinc-500">
+                          {a.examTitle} • PIN: {a.roomCode}
+                          {a.submittedAt
+                            ? ` • ${new Date(a.submittedAt).toLocaleString("vi-VN")}`
+                            : ""}
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className="text-base font-black text-zinc-900">{a.correctCount}</div>
+                        <div className="text-xs text-zinc-500">câu đúng</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+
+          {/* Detail panel */}
+          <Card title="Chi tiết" description={selected ? (selected.username ?? `Student #${selected.studentId}`) : "Chọn một bài thi"}>
+            {selected ? (
+              <div className="grid gap-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-xl border-2 border-[color:var(--border)] bg-[color:var(--surface-warm)] p-3 text-center shadow-[2px_2px_0_#1a1a1a]">
+                    <div className="text-xs font-bold text-zinc-500">Câu đúng</div>
+                    <div className="text-2xl font-black text-zinc-900">{selected.correctCount}</div>
+                  </div>
+                  <div className="rounded-xl border-2 border-[color:var(--border)] bg-[color:var(--surface-warm)] p-3 text-center shadow-[2px_2px_0_#1a1a1a]">
+                    <div className="text-xs font-bold text-zinc-500">Đã trả lời</div>
+                    <div className="text-2xl font-black text-zinc-900">{selected.answerCount}</div>
+                  </div>
+                </div>
+                <div className="grid gap-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-zinc-500">Phòng thi</span>
+                    <span className="font-bold font-mono text-zinc-900">{selected.roomCode}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-zinc-500">Đề thi</span>
+                    <span className="font-bold text-zinc-900 text-right max-w-[60%] truncate">{selected.examTitle}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-zinc-500">Vi phạm</span>
+                    <Badge variant={selected.violationCount > 0 ? "danger" : "default"}>{selected.violationCount}</Badge>
+                  </div>
+                  {selected.submittedAt && (
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Nộp lúc</span>
+                      <span className="text-xs">{new Date(selected.submittedAt).toLocaleString("vi-VN")}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="border-t border-zinc-200 pt-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <span className="text-sm font-bold text-zinc-900">Chi tiết vi phạm</span>
+                    {selected.violationCount > 0 && (
+                      <Badge variant="danger">{selected.violationCount}</Badge>
+                    )}
+                  </div>
+                  {violationsLoading ? (
+                    <p className="py-4 text-center text-sm text-zinc-400">Đang tải...</p>
+                  ) : violations.length === 0 ? (
+                    <p className="rounded-xl border-2 border-dashed border-zinc-200 bg-zinc-50 px-4 py-6 text-center text-sm text-zinc-500">
+                      {selected.violationCount > 0
+                        ? "Không tải được danh sách vi phạm."
+                        : "Học viên không có vi phạm trong bài thi này."}
+                    </p>
+                  ) : (
+                    <ul className="grid max-h-72 gap-2 overflow-y-auto">
+                      {violations.map((v) => (
+                        <li
+                          key={v.id}
+                          className="rounded-xl border-2 border-[color:var(--border)] bg-[#FFF5F5] px-3 py-2.5 shadow-[2px_2px_0_#991B1B]"
+                        >
+                          <div className="flex items-start gap-2">
+                            <span className="text-base leading-none">{violationIcon(v.violationType)}</span>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-bold text-red-900">
+                                {getViolationLabel(v.violationType)}
+                              </div>
+                              {v.evidenceUrl ? (
+                                <p className="mt-1 text-xs leading-relaxed text-red-800/80">{v.evidenceUrl}</p>
+                              ) : null}
+                              <div className="mt-1 text-[10px] font-semibold text-red-700/60">
+                                {new Date(v.timestamp).toLocaleString("vi-VN")}
+                              </div>
+                            </div>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <ButtonLink href={`/teacher/rooms/${selected.roomId}`} variant="secondary" className="justify-center">
+                  Xem phòng thi
+                </ButtonLink>
+              </div>
+            ) : (
+              <div className="py-8 text-center text-sm text-zinc-400">
+                Chọn một bài thi để xem chi tiết.
+              </div>
+            )}
+          </Card>
+        </div>
       </div>
     </AppShell>
   );

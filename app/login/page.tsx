@@ -1,8 +1,52 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Button, ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { useToast } from "@/components/ui/toast";
+import { useAuth } from "@/lib/auth-context";
+import { ApiError } from "@/lib/api";
 
 export default function LoginPage() {
+  const router = useRouter();
+  const toast = useToast();
+  const { login } = useAuth();
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || !password) {
+      setError("Vui lòng nhập đầy đủ email và mật khẩu.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const user = await login(email, password);
+      toast.push({ title: "Đăng nhập thành công!", variant: "success" });
+      // Redirect by role
+      if ((user as any)?.role === "teacher") {
+        router.push("/teacher");
+      } else {
+        router.push("/student");
+      }
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.message);
+      } else {
+        setError("Đăng nhập thất bại. Vui lòng thử lại.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="flex flex-1 items-center justify-center bg-[color:var(--surface-cream)] py-12">
       <div className="mx-auto w-full max-w-lg px-4 sm:px-6">
@@ -17,12 +61,36 @@ export default function LoginPage() {
         </div>
 
         <Card shadow="green">
-          <form className="grid gap-3">
-            <Input label="Email" type="email" placeholder="you@example.com" autoComplete="email" required />
-            <Input label="Mật khẩu" type="password" placeholder="••••••••" autoComplete="current-password" required />
+          <form className="grid gap-3" onSubmit={handleSubmit}>
+            <Input
+              label="Email"
+              type="email"
+              placeholder="you@example.com"
+              autoComplete="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <Input
+              label="Mật khẩu"
+              type="password"
+              placeholder="••••••••"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+
+            {error && (
+              <div className="rounded-xl border-2 border-red-500 bg-[#FFD6DD] px-3 py-2 text-sm font-semibold text-red-700">
+                {error}
+              </div>
+            )}
 
             <div className="grid gap-3">
-              <Button type="button">Đăng nhập</Button>
+              <Button type="submit" disabled={loading}>
+                {loading ? "Đang đăng nhập..." : "Đăng nhập"}
+              </Button>
               <ButtonLink href="/" variant="ghost">
                 Quay lại trang chủ
               </ButtonLink>
@@ -36,10 +104,6 @@ export default function LoginPage() {
             </div>
           </form>
         </Card>
-
-        <div className="mt-4 text-center text-xs text-zinc-500">
-          Placeholder UI: sẽ nối API `/auth/login` khi backend sẵn sàng.
-        </div>
       </div>
     </div>
   );

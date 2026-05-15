@@ -2,18 +2,21 @@
 
 import { Suspense, useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import * as faceapi from '@vladmandic/face-api';
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
-import { Button, ButtonLink } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useToast } from "@/components/ui/toast";
-import { mockExam, normalizeExamCode, serializeAnswers, type OptionId } from "../mock-exam";
-import { addAttempt, addViolations, randomId, updateStudentProgress, type DemoViolation, type ViolationType } from "@/lib/demo-store";
-import { calculateExamResult } from "../mock-exam";
+import { useAuth } from "@/lib/auth-context";
+import { getExamDetail, type Question } from "@/lib/api";
+import { connectSocket, disconnectSocket, type Socket } from "@/lib/socket";
 
-const TOTAL_QUESTIONS = mockExam.questions.length;
-const TOTAL_SECONDS = mockExam.durationMinutes * 60;
+// face-api must be loaded dynamically (browser-only, needs TextEncoder)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type FaceApiModule = typeof import('@vladmandic/face-api');
+
+type OptionId = "A" | "B" | "C" | "D";
+type ViolationType = "tab_switch" | "keyboard_copy" | "keyboard_paste" | "camera_multiple_faces" | "camera_gaze_away" | "camera_missing";
 
 function formatTime(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
@@ -25,62 +28,158 @@ function StudentExamRunnerContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const toast = useToast();
+  const { user, loading: authLoading } = useAuth();
 
-  const queryCode = normalizeExamCode(searchParams.get("code") ?? "");
-  const examCode = queryCode || "DEMO01";
-  const hasProvidedCode = Boolean(queryCode);
+  const roomId = Number(searchParams.get("roomId") ?? "0");
+  const examCode = searchParams.get("code") ?? "";
 
+  // Exam data from API
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [examTitle, setExamTitle] = useState("Đang tải...");
+  const [durationMinutes, setDurationMinutes] = useState(60);
+  const [examId, setExamId] = useState<number | null>(null);
+  const [loadingExam, setLoadingExam] = useState(true);
+  const [attemptId, setAttemptId] = useState<number | null>(null);
+
+  // Socket
+  const socketRef = useRef<Socket | null>(null);
+  // face-api loaded dynamically (browser only)
+  const faceapiRef = useRef<FaceApiModule | null>(null);
+
+  // Exam state
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [timeLeftSeconds, setTimeLeftSeconds] = useState(TOTAL_SECONDS);
-  const [answers, setAnswers] = useState<Array<OptionId | null>>(() =>
-    Array.from({ length: TOTAL_QUESTIONS }, () => null),
-  );
+  const [timeLeftSeconds, setTimeLeftSeconds] = useState(0);
+  const [answers, setAnswers] = useState<Array<number | null>>([]); // optionId (number)
+  const [submitted, setSubmitted] = useState(false);
   const [warningMessage, setWarningMessage] = useState<string | null>(null);
   const [violationCounts, setViolationCounts] = useState<Record<ViolationType, number>>({
-    tab_switch: 0,
-    keyboard_copy: 0,
-    keyboard_paste: 0,
-    camera_multiple_faces: 0,
-    camera_gaze_away: 0,
-    camera_missing: 0,
+    tab_switch: 0, keyboard_copy: 0, keyboard_paste: 0,
+    camera_multiple_faces: 0, camera_gaze_away: 0, camera_missing: 0,
   });
-  const [violationLog, setViolationLog] = useState<DemoViolation[]>([]);
 
+  // Camera
   const videoRef = useRef<HTMLVideoElement>(null);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const lastCameraViolationTime = useRef(0);
 
+  // Result state (shown after submit)
+  const [result, setResult] = useState<{ correctCount: number; total: number; score: number } | null>(null);
+  // Waiting for teacher to start the room
+  const [waitingForStart, setWaitingForStart] = useState(false);
+
+  /* ── Auth guard ───────────────────────────────────────────────────── */
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      setTimeLeftSeconds((previous) => {
-        if (previous <= 1) {
-          window.clearInterval(timer);
-          return 0;
-        }
-        return previous - 1;
-      });
-    }, 1000);
+    if (authLoading) return;
+    if (!user) { router.push("/login"); return; }
+    if (user.role !== "student") { router.push("/teacher"); return; }
+  }, [user, authLoading, router]);
+
+  /* ── Join socket & get room info ────────────────────────────────── */
+  useEffect(() => {
+    if (!roomId || authLoading || !user) return;
+
+    const s = connectSocket();
+    socketRef.current = s;
+
+    s.emit("join", { code: examCode }, (res: any) => {
+      console.log("[Student WS] join:", res);
+      if (res?.error) {
+        toast.push({ title: "Không thể vào phòng thi", message: res.error, variant: "danger" });
+        setLoadingExam(false);
+        return;
+      }
+      // Store attemptId returned from server
+      if (res?.attemptId) {
+        setAttemptId(res.attemptId);
+      }
+      if (res?.status === "WAITING") {
+        // Room not started yet — show waiting screen
+        setWaitingForStart(true);
+        setLoadingExam(false);
+      } else if (res?.status === "ACTIVE") {
+        // Room already active — load exam immediately
+        setWaitingForStart(false);
+        const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
+        if (storedExamId) loadExam(Number(storedExamId));
+      }
+    });
+
+    // Teacher started the exam — room is now ACTIVE
+    s.on("room_start", (payload: { durationMinutes: number; endTime: string }) => {
+      setWaitingForStart(false);
+      const now = Date.now();
+      const end = new Date(payload.endTime).getTime();
+      const secsLeft = Math.max(0, Math.floor((end - now) / 1000));
+      setTimeLeftSeconds(secsLeft);
+      setDurationMinutes(payload.durationMinutes);
+      // Load exam questions now (examId stored in sessionStorage from join page)
+      const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
+      if (storedExamId) loadExam(Number(storedExamId));
+    });
+
+    s.on("room_time_up", () => {
+      toast.push({ title: "Hết giờ!", message: "Bài thi đã được nộp tự động.", variant: "warning" });
+      handleAutoSubmit();
+    });
 
     return () => {
-      window.clearInterval(timer);
+      s.off("room_start");
+      s.off("room_time_up");
+      disconnectSocket();
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId, examCode, user, authLoading]);
 
+
+  /* ── Load exam questions (only when room is ACTIVE) ─────────────── */
+  useEffect(() => {
+    if (!roomId || !user || authLoading || waitingForStart) return;
+    const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
+    if (storedExamId) {
+      const eid = Number(storedExamId);
+      setExamId(eid);
+      loadExam(eid);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId, user, authLoading, waitingForStart]);
+
+  const loadExam = async (eid: number) => {
+    try {
+      const detail = await getExamDetail(eid);
+      setQuestions(detail.questions);
+      setExamTitle(detail.title);
+      setDurationMinutes(detail.durationMinutes);
+      setTimeLeftSeconds(detail.durationMinutes * 60);
+      setAnswers(Array(detail.questions.length).fill(null));
+    } catch {
+      toast.push({ title: "Lỗi tải đề thi", variant: "danger" });
+    } finally {
+      setLoadingExam(false);
+    }
+  };
+
+  /* ── Timer ──────────────────────────────────────────────────────── */
+  useEffect(() => {
+    if (timeLeftSeconds <= 0 || submitted) return;
+    const timer = window.setInterval(() => {
+      setTimeLeftSeconds((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          handleAutoSubmit();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeLeftSeconds > 0, submitted]);
+
+  /* ── Violation reporting ─────────────────────────────────────────── */
   const pushViolation = useCallback((type: ViolationType, description: string) => {
-    const createdAt = new Date().toISOString();
-    const attemptId = "pending";
-    const item: DemoViolation = {
-      id: randomId("vio"),
-      attemptId,
-      studentEmail: "student.demo@example.com",
-      createdAt,
-      type,
-      description,
-    };
-
     setViolationCounts((prev) => ({ ...prev, [type]: (prev[type] ?? 0) + 1 }));
-    setViolationLog((prev) => [item, ...prev].slice(0, 50));
+    setWarningMessage(description);
 
     const titleMap: Record<ViolationType, string> = {
       tab_switch: "Cảnh báo: Chuyển tab",
@@ -90,19 +189,30 @@ function StudentExamRunnerContent() {
       camera_gaze_away: "Cảnh báo: Nhìn ra ngoài",
       camera_missing: "Cảnh báo: Thiếu camera",
     };
-
-    setWarningMessage(description);
     toast.push({ title: titleMap[type], message: description, variant: "danger" });
     window.setTimeout(() => setWarningMessage(null), 4500);
-  }, [toast]);
 
-  // AI Camera Init
+    // Emit to backend — send type + description (gateway normalises them)
+    if (socketRef.current && roomId) {
+      socketRef.current.emit("violation", {
+        roomId,
+        attemptId: attemptId ?? undefined,
+        type,
+        description,
+      });
+    }
+  }, [toast, roomId, attemptId]);
+
+  /* ── Anti-cheat: camera ─────────────────────────────────────────── */
   useEffect(() => {
     const loadModels = async () => {
       try {
+        // Dynamic import to avoid SSR TextEncoder issue
+        const fa = await import('@vladmandic/face-api');
+        faceapiRef.current = fa;
         await Promise.all([
-          faceapi.nets.tinyFaceDetector.loadFromUri('/models'),
-          faceapi.nets.faceLandmark68Net.loadFromUri('/models'),
+          fa.nets.tinyFaceDetector.loadFromUri('/models'),
+          fa.nets.faceLandmark68Net.loadFromUri('/models'),
         ]);
         setModelsLoaded(true);
       } catch (err: any) {
@@ -119,33 +229,25 @@ function StudentExamRunnerContent() {
     const startVideo = async () => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
-      } catch (err) {
+        if (videoRef.current) videoRef.current.srcObject = stream;
+      } catch {
         setCameraError("Không thể truy cập camera. Vui lòng cấp quyền.");
         pushViolation("camera_missing", "Người dùng từ chối quyền truy cập camera.");
       }
     };
     startVideo();
-
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-      }
-    };
+    return () => { stream?.getTracks().forEach((t) => t.stop()); };
   }, [modelsLoaded, pushViolation]);
 
   useEffect(() => {
     if (!modelsLoaded || cameraError) return;
-    
+    const fa = faceapiRef.current;
+    if (!fa) return;
     const interval = window.setInterval(async () => {
-      if (videoRef.current && videoRef.current.readyState === 4) {
-        const detections = await faceapi.detectAllFaces(
-          videoRef.current,
-          new faceapi.TinyFaceDetectorOptions({ inputSize: 160 })
-        ).withFaceLandmarks();
-
+      if (videoRef.current?.readyState === 4) {
+        const detections = await fa
+          .detectAllFaces(videoRef.current, new fa.TinyFaceDetectorOptions({ inputSize: 160 }))
+          .withFaceLandmarks();
         const now = Date.now();
         if (now - lastCameraViolationTime.current > 5000) {
           if (detections.length === 0) {
@@ -158,22 +260,19 @@ function StudentExamRunnerContent() {
         }
       }
     }, 3000);
-
-    return () => window.clearInterval(interval);
+    return () => clearInterval(interval);
   }, [modelsLoaded, cameraError, pushViolation]);
 
+  /* ── Anti-cheat: tab / keyboard / context ───────────────────────── */
   useEffect(() => {
     const onVisibility = () => {
-      if (document.visibilityState === "hidden") {
+      if (document.visibilityState === "hidden")
         pushViolation("tab_switch", "Bạn vừa rời khỏi tab làm bài.");
-      }
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pushViolation]);
 
-  // Anti-cheat: block copy/paste
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "c") {
@@ -187,346 +286,315 @@ function StudentExamRunnerContent() {
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pushViolation]);
 
-  // Anti-cheat: block right-click
   useEffect(() => {
-    const onContextMenu = (e: MouseEvent) => {
-      e.preventDefault();
-    };
-    document.addEventListener("contextmenu", onContextMenu);
-    return () => document.removeEventListener("contextmenu", onContextMenu);
+    const onCtxMenu = (e: MouseEvent) => e.preventDefault();
+    document.addEventListener("contextmenu", onCtxMenu);
+    return () => document.removeEventListener("contextmenu", onCtxMenu);
   }, []);
 
+  /* ── Select answer ──────────────────────────────────────────────── */
+  const handleSelectOption = (optionId: number) => {
+    if (submitted) return;
+    const q = questions[currentQuestionIndex];
+    if (!q) return;
 
-  const currentQuestion = mockExam.questions[currentQuestionIndex];
-  const currentAnswer = answers[currentQuestionIndex];
-  const answeredCount = answers.filter(Boolean).length;
-  const isTimeUp = timeLeftSeconds === 0;
-  const timerLabel = useMemo(() => formatTime(timeLeftSeconds), [timeLeftSeconds]);
-
-  const optionEntries = Object.entries(currentQuestion.options) as Array<[OptionId, string]>;
-
-  const handleSelectOption = (option: OptionId) => {
-    if (isTimeUp) {
-      return;
-    }
-
-    setAnswers((previous) => {
-      const next = [...previous];
-      next[currentQuestionIndex] = option;
+    setAnswers((prev) => {
+      const next = [...prev];
+      next[currentQuestionIndex] = optionId;
       return next;
     });
+
+    // Emit to backend
+    if (socketRef.current && roomId) {
+      socketRef.current.emit("answer", {
+        roomId,
+        questionId: q.id,
+        optionId,
+      });
+    }
   };
 
-  // Broadcast live progress to localStorage (teacher room view polls this)
-  useEffect(() => {
-    const correctSoFar = answers.reduce((count, ans, idx) => {
-      if (ans && ans === mockExam.questions[idx].answer) return count + 1;
-      return count;
-    }, 0);
-    const totalViolationCount = Object.values(violationCounts).reduce((a, b) => a + b, 0);
-
-    updateStudentProgress({
-      studentEmail: "student.demo@example.com",
-      roomPin: examCode,
-      currentQuestion: currentQuestionIndex + 1,
-      totalQuestions: TOTAL_QUESTIONS,
-      answeredCount,
-      correctCount: correctSoFar,
-      violationCount: totalViolationCount,
-      updatedAt: new Date().toISOString(),
-    });
-  }, [answers, currentQuestionIndex, answeredCount, violationCounts, examCode]);
+  /* ── Submit ─────────────────────────────────────────────────────── */
+  const handleAutoSubmit = useCallback(() => {
+    if (submitted) return;
+    setSubmitted(true);
+    if (socketRef.current && roomId) {
+      socketRef.current.emit("submit", { roomId }, (res: any) => {
+        console.log("[Student WS] submit callback:", res);
+        if (res?.error) {
+          toast.push({
+            title: "Lỗi nộp bài",
+            message: String(res.error),
+            variant: "danger",
+          });
+          setSubmitted(false);
+          return;
+        }
+        const correctCount = res?.correctCount ?? 0;
+        const total = res?.totalQuestions ?? questions.length;
+        const score = total > 0 ? parseFloat(((correctCount / total) * 10).toFixed(1)) : 0;
+        setResult({ correctCount, total, score });
+      });
+    } else {
+      toast.push({ title: "Mất kết nối", message: "Không thể nộp bài. Vui lòng thử lại.", variant: "danger" });
+      setSubmitted(false);
+    }
+  }, [submitted, roomId, questions.length, toast]);
 
   const handleSubmit = () => {
-    const attemptId = randomId("att");
-    const serializedAnswers = serializeAnswers(answers);
-    const computed = calculateExamResult(mockExam, answers);
-
-    const startedAt = new Date(Date.now() - Math.max(0, TOTAL_SECONDS - timeLeftSeconds) * 1000).toISOString();
-    const submittedAt = new Date().toISOString();
-
-    addAttempt({
-      id: attemptId,
-      examCode,
-      examTitle: mockExam.title,
-      studentEmail: "student.demo@example.com",
-      startedAt,
-      submittedAt,
-      status: "completed",
-      score: computed.score,
-      totalCorrect: computed.correctCount,
-      totalQuestions: computed.totalQuestions,
-      violationCount: Object.values(violationCounts).reduce((a, b) => a + b, 0),
-    });
-
-    if (violationLog.length > 0) {
-      addViolations(
-        violationLog.map((v) => ({
-          ...v,
-          attemptId,
-          studentEmail: "student.demo@example.com",
-        })),
+    const answeredCount = answers.filter((a) => a !== null).length;
+    const unansweredCount = questions.length - answeredCount;
+    if (unansweredCount > 0) {
+      const confirmed = window.confirm(
+        `Bạn còn ${unansweredCount} câu chưa trả lời. Xác nhận nộp bài?`,
       );
+      if (!confirmed) return;
     }
-
-    router.push(`/student/result?code=${encodeURIComponent(examCode)}&answers=${serializedAnswers}`);
+    handleAutoSubmit();
   };
 
-  return (
-    <AppShell
-      title="Student Dashboard"
-      subtitle="Đang làm bài"
-      nav={[
-        { href: "/student", label: "Tổng quan" },
-        { href: "/student/join", label: "Nhập mã phòng thi", badge: "code" },
-        { href: "/student/history", label: "Lịch sử bài thi" },
-      ]}
-    >
-      <div className="page-stack">
-        <div className="section-head flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-black text-zinc-900">{mockExam.title}</h1>
-            <p className="mt-1 text-sm text-zinc-600">
-              Mã phòng thi: <span className="font-bold">{examCode}</span> • {TOTAL_QUESTIONS} câu hỏi
+  /* ── Derived ─────────────────────────────────────────────────────── */
+  const answeredCount = useMemo(() => answers.filter((a) => a !== null).length, [answers]);
+  const currentQuestion = questions[currentQuestionIndex];
+  const OPTION_LABELS: OptionId[] = ["A", "B", "C", "D"];
+
+  const totalViolations = Object.values(violationCounts).reduce((a, b) => a + b, 0);
+
+  /* ── Waiting for teacher to start ───────────────────────────────── */
+  if (waitingForStart) {
+    return (
+      <AppShell title="Student Dashboard" subtitle="Chờ phòng thi bắt đầu" nav={[]}>
+        <div className="flex flex-col items-center justify-center gap-6 py-20">
+          <div className="grid h-20 w-20 animate-pulse place-items-center rounded-2xl border-4 border-[color:var(--border)] bg-[color:var(--surface-mint)] text-4xl shadow-[6px_6px_0_#1a1a1a]">
+            ⏳
+          </div>
+          <div className="text-center">
+            <h2 className="text-2xl font-black text-zinc-900">Chờ giáo viên bắt đầu</h2>
+            <p className="mt-2 text-sm text-zinc-500">
+              Bạn đã vào phòng thi thành công. Bài thi sẽ bắt đầu khi giáo viên bấm{" "}
+              <span className="font-bold text-zinc-700">"Bắt đầu thi"</span>.
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge variant={isTimeUp ? "danger" : timeLeftSeconds <= 300 ? "warning" : "success"}>
-              Còn lại {timerLabel}
-            </Badge>
-            <Badge variant="default">
-              Đã trả lời {answeredCount}/{TOTAL_QUESTIONS}
-            </Badge>
+          <div className="flex gap-2">
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                className="h-3 w-3 animate-bounce rounded-full border-2 border-[color:var(--border)] bg-[color:var(--primary)]"
+                style={{ animationDelay: `${i * 0.15}s` }}
+              />
+            ))}
           </div>
         </div>
+      </AppShell>
+    );
+  }
 
-        {!hasProvidedCode ? (
-          <div className="rounded-2xl border-2 border-amber-500 bg-[#FFF3CD] px-4 py-3 text-sm font-semibold text-amber-900 shadow-[3px_3px_0_#1a1a1a]">
-            Bạn vào trang thi mà chưa có mã từ trang Join. Hệ thống đang dùng mã demo <span className="font-bold">DEMO01</span>.
+  /* ── Loading exam ─────────────────────────────────────────────────── */
+  if (loadingExam || !questions.length) {
+    return (
+      <AppShell title="Student Dashboard" subtitle="Đang tải đề thi..." nav={[]}>
+        <div className="flex flex-col items-center justify-center gap-4 py-20">
+          <div className="text-lg font-bold text-zinc-700">Đang tải đề thi...</div>
+          <p className="text-sm text-zinc-500">Vui lòng chờ trong giây lát.</p>
+        </div>
+      </AppShell>
+    );
+  }
+
+  /* ── Result screen ───────────────────────────────────────────────── */
+  if (submitted && result) {
+    return (
+      <AppShell title="Student Dashboard" subtitle="Kết quả bài thi" nav={[]}>
+        <div className="page-stack">
+          <div className="section-head text-center">
+            <h1 className="text-3xl font-black text-zinc-900">🎉 Nộp bài thành công!</h1>
+            <p className="mt-2 text-zinc-600">{examTitle}</p>
           </div>
-        ) : null}
-
-        {warningMessage ? (
-          <div className="rounded-2xl border-2 border-red-500 bg-[#FFD6DD] px-4 py-3 text-sm font-bold text-red-900 shadow-[3px_3px_0_#1a1a1a]">
-            {warningMessage}
+          <div className="bento-grid">
+            <Card title="Điểm" description="Thang điểm 10" shadow="green">
+              <div className="text-4xl font-black text-zinc-900">{result.score.toFixed(1)}</div>
+            </Card>
+            <Card title="Câu đúng" shadow="orange">
+              <div className="text-4xl font-black text-zinc-900">{result.correctCount}/{result.total}</div>
+            </Card>
+            <Card title="Vi phạm" shadow="red">
+              <div className="text-4xl font-black text-zinc-900">{totalViolations}</div>
+            </Card>
           </div>
-        ) : null}
-
-        {isTimeUp ? (
-          <div className="rounded-2xl border-2 border-red-500 bg-[#FFD6DD] px-4 py-3 text-sm font-bold text-red-800 shadow-[3px_3px_0_#1a1a1a]">
-            Đã hết thời gian làm bài. Bạn không thể đổi đáp án nữa, vui lòng nộp bài.
+          <div className="flex justify-center gap-3">
+            <button
+              onClick={() => router.push("/student")}
+              className="rounded-2xl border-2 border-[color:var(--border)] bg-white px-5 py-2.5 text-sm font-bold text-zinc-900 shadow-[4px_4px_0_#1a1a1a] transition hover:shadow-[6px_6px_0_#1a1a1a]"
+            >
+              Về dashboard
+            </button>
+            <button
+              onClick={() => router.push("/student/history")}
+              className="rounded-2xl border-2 border-[color:var(--border)] bg-[color:var(--primary)] px-5 py-2.5 text-sm font-bold text-white shadow-[4px_4px_0_#1a1a1a] transition hover:shadow-[6px_6px_0_#1a1a1a]"
+            >
+              Xem lịch sử
+            </button>
           </div>
-        ) : null}
+        </div>
+      </AppShell>
+    );
+  }
 
-        <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
-          <Card
-            title={`Câu ${currentQuestionIndex + 1}/${TOTAL_QUESTIONS}`}
-            description={currentAnswer ? `Đã chọn đáp án ${currentAnswer}` : "Chưa chọn đáp án"}
-            right={<Badge variant={currentAnswer ? "success" : "warning"}>{currentAnswer ? "Đã trả lời" : "Chưa trả lời"}</Badge>}
-          >
-            <div className="grid gap-4">
-              <div className="text-sm font-bold text-zinc-900">{currentQuestion.content}</div>
+  if (submitted) {
+    return (
+      <AppShell title="Student Dashboard" subtitle="Kết quả bài thi" nav={[]}>
+        <div className="flex flex-col items-center justify-center gap-4 py-20">
+          <div className="text-lg font-bold text-zinc-700">Đang xử lý kết quả...</div>
+        </div>
+      </AppShell>
+    );
+  }
 
-              <div className="grid gap-2">
-                {optionEntries.map(([option, content]) => {
-                  const isSelected = currentAnswer === option;
+  return (
+    <AppShell title="Student Dashboard" subtitle={examTitle} nav={[]}>
+      <div className="grid gap-4">
+        {/* Warning banner */}
+        {warningMessage && (
+          <div className="rounded-2xl border-4 border-red-500 bg-[#FFD6DD] px-4 py-3 text-sm font-bold text-red-800 shadow-[5px_5px_0_#991B1B]">
+            ⚠️ {warningMessage}
+          </div>
+        )}
 
-                  return (
-                    <label
-                      key={option}
-                      className={[
-                        "flex items-center gap-3 rounded-xl border-2 border-[color:var(--border)] px-4 py-3 text-sm transition-all",
-                        isTimeUp ? "cursor-not-allowed opacity-85" : "cursor-pointer",
-                        isSelected
-                          ? "bg-[color:var(--surface-mint)] shadow-[2px_2px_0_#1a1a1a]"
-                          : "bg-white shadow-[3px_3px_0_#1a1a1a] hover:shadow-[5px_5px_0_#1a1a1a]",
-                      ]
-                        .filter(Boolean)
-                        .join(" ")}
-                    >
-                      <input
-                        type="radio"
-                        name={`question-${currentQuestion.id}`}
-                        checked={isSelected}
-                        onChange={() => handleSelectOption(option)}
-                        disabled={isTimeUp}
-                      />
-                      <span className="grid h-7 w-7 place-items-center rounded-lg border-2 border-[color:var(--border)] bg-[color:var(--surface-warm)] font-bold text-zinc-900 shadow-[2px_2px_0_#1a1a1a]">
-                        {option}
-                      </span>
-                      <span className="text-zinc-700">{content}</span>
-                    </label>
-                  );
-                })}
+        {/* Header row */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Badge variant={timeLeftSeconds < 120 ? "danger" : timeLeftSeconds < 300 ? "warning" : "success"}>
+              ⏱ {formatTime(timeLeftSeconds)}
+            </Badge>
+            <Badge>
+              {answeredCount}/{questions.length} đã trả lời
+            </Badge>
+            {totalViolations > 0 && (
+              <Badge variant="danger">{totalViolations} vi phạm</Badge>
+            )}
+          </div>
+          <Button onClick={handleSubmit} variant="danger">Nộp bài</Button>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
+          {/* Question navigator */}
+          <div className="grid gap-3">
+            {/* Camera */}
+            <Card title="Camera giám sát">
+              <div className="relative aspect-video w-full overflow-hidden rounded-xl border-2 border-[color:var(--border)] bg-zinc-900">
+                <video ref={videoRef} autoPlay muted playsInline className="h-full w-full object-cover" />
+                {cameraError && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-zinc-900/80 p-3 text-center text-xs text-red-400">
+                    {cameraError}
+                  </div>
+                )}
+                {!modelsLoaded && !cameraError && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-zinc-900/60 text-xs text-white">
+                    Đang tải AI...
+                  </div>
+                )}
               </div>
+            </Card>
 
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <Button
-                  variant="secondary"
-                  className="justify-center"
-                  onClick={() => setCurrentQuestionIndex((previous) => Math.max(0, previous - 1))}
-                  disabled={currentQuestionIndex === 0}
-                >
-                  Trước
-                </Button>
-                <Button
-                  variant="secondary"
-                  className="justify-center"
-                  onClick={() =>
-                    setCurrentQuestionIndex((previous) => Math.min(TOTAL_QUESTIONS - 1, previous + 1))
-                  }
-                  disabled={currentQuestionIndex === TOTAL_QUESTIONS - 1}
-                >
-                  Sau
-                </Button>
-                <Button className="justify-center sm:ml-auto" onClick={handleSubmit}>
-                  Nộp bài
-                </Button>
-              </div>
-            </div>
-          </Card>
-
-          <Card title="Điều hướng câu hỏi" description="Chọn nhanh câu cần làm">
-            <div className="grid gap-4">
-              <div className="hidden grid-cols-5 gap-2 lg:grid">
-                {mockExam.questions.map((question, index) => {
-                  const answered = Boolean(answers[index]);
-                  const active = index === currentQuestionIndex;
-
+            {/* Navigator grid */}
+            <Card title="Điều hướng câu hỏi">
+              <div className="grid grid-cols-5 gap-2">
+                {questions.map((_, idx) => {
+                  const isAnswered = answers[idx] !== null;
+                  const isCurrent = idx === currentQuestionIndex;
                   return (
                     <button
-                      key={question.id}
+                      key={idx}
                       type="button"
+                      onClick={() => setCurrentQuestionIndex(idx)}
                       className={[
-                        "h-10 rounded-lg border-2 border-[color:var(--border)] text-sm font-bold transition-all",
-                        active
-                          ? "bg-[color:var(--primary)] text-white shadow-[2px_2px_0_#1a1a1a]"
-                          : answered
-                            ? "bg-[color:var(--surface-mint)] text-emerald-700 shadow-[3px_3px_0_#1a1a1a]"
-                            : "bg-white text-zinc-700 shadow-[3px_3px_0_#1a1a1a] hover:shadow-[5px_5px_0_#1a1a1a]",
-                      ]
-                        .filter(Boolean)
-                        .join(" ")}
-                      onClick={() => setCurrentQuestionIndex(index)}
+                        "grid h-9 w-9 place-items-center rounded-lg border-2 border-[color:var(--border)] text-xs font-bold transition-all",
+                        isCurrent
+                          ? "bg-[color:var(--primary)] text-white shadow-[3px_3px_0_#1a1a1a]"
+                          : isAnswered
+                            ? "bg-[color:var(--surface-mint)] text-emerald-700 shadow-[2px_2px_0_#166534]"
+                            : "bg-white text-zinc-600 shadow-[2px_2px_0_#1a1a1a] hover:shadow-[3px_3px_0_#1a1a1a]",
+                      ].join(" ")}
                     >
-                      {index + 1}
+                      {idx + 1}
                     </button>
                   );
                 })}
               </div>
+            </Card>
+          </div>
 
-              <div className="rounded-xl border-2 border-[color:var(--border)] bg-[color:var(--surface-warm)] p-3 text-xs font-semibold text-zinc-600 shadow-[2px_2px_0_#1a1a1a]">
-                Câu hiện tại: <span className="font-bold">{currentQuestionIndex + 1}</span> • Trạng thái:{" "}
-                <span className="font-bold">{currentAnswer ? "Đã trả lời" : "Chưa trả lời"}</span>
-              </div>
-
-              <div className="grid gap-2">
-                <div className="text-xs font-bold text-zinc-700">Camera AI</div>
-                <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-zinc-900 border-2 border-[color:var(--border)] shadow-[3px_3px_0_#1a1a1a]">
-                  <video 
-                    ref={videoRef}
-                    autoPlay 
-                    muted 
-                    playsInline 
-                    className="h-full w-full object-cover scale-x-[-1]"
-                  />
-                  {!modelsLoaded && (
-                    <div className="absolute inset-0 grid place-items-center bg-black/60 text-xs font-bold text-white px-2 text-center leading-relaxed">
-                      Đang khởi tạo AI...
-                    </div>
-                  )}
-                  {cameraError && (
-                    <div className="absolute inset-0 grid place-items-center bg-red-900/90 p-3 text-center text-xs font-bold text-white leading-relaxed">
-                      {cameraError}
-                    </div>
-                  )}
+          {/* Question panel */}
+          {currentQuestion && (
+            <Card
+              title={`Câu ${currentQuestionIndex + 1} / ${questions.length}`}
+              shadow="green"
+            >
+              <div className="grid gap-4">
+                <div className="rounded-xl bg-[color:var(--surface-warm)] px-4 py-3 text-sm font-bold text-zinc-900 leading-relaxed border-2 border-[color:var(--border)]">
+                  {currentQuestion.content}
                 </div>
-              </div>
 
-              <div className="grid gap-2">
-                <div className="text-xs font-bold text-zinc-700">Anti-cheat panel</div>
-                <div className="grid gap-2 text-sm text-zinc-700">
-                  <div className="flex items-center justify-between">
-                    <span>Tab switch</span>
-                    <Badge variant={violationCounts.tab_switch ? "warning" : "default"}>{violationCounts.tab_switch}</Badge>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Copy</span>
-                    <Badge variant={violationCounts.keyboard_copy ? "warning" : "default"}>{violationCounts.keyboard_copy}</Badge>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Paste</span>
-                    <Badge variant={violationCounts.keyboard_paste ? "warning" : "default"}>{violationCounts.keyboard_paste}</Badge>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Camera</span>
-                    <Badge
-                      variant={
-                        violationCounts.camera_multiple_faces ||
-                        violationCounts.camera_gaze_away ||
-                        violationCounts.camera_missing
-                          ? "warning"
-                          : "default"
-                      }
-                    >
-                      {violationCounts.camera_multiple_faces +
-                        violationCounts.camera_gaze_away +
-                        violationCounts.camera_missing}
-                    </Badge>
-                  </div>
+                <div className="grid gap-3">
+                  {currentQuestion.options.map((opt, idx) => {
+                    const label = OPTION_LABELS[idx];
+                    const isSelected = answers[currentQuestionIndex] === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => handleSelectOption(opt.id)}
+                        className={[
+                          "flex items-center gap-3 rounded-2xl border-2 px-4 py-3 text-left text-sm font-semibold transition-all",
+                          isSelected
+                            ? "border-[color:var(--primary)] bg-[color:var(--primary-surface)] text-emerald-800 shadow-[4px_4px_0_#166534]"
+                            : "border-[color:var(--border)] bg-white text-zinc-700 shadow-[3px_3px_0_#1a1a1a] hover:shadow-[5px_5px_0_#1a1a1a]",
+                        ].join(" ")}
+                      >
+                        <span className={[
+                          "grid h-8 w-8 shrink-0 place-items-center rounded-full border-2 border-[color:var(--border)] text-xs font-black",
+                          isSelected
+                            ? "bg-[color:var(--primary)] text-white"
+                            : "bg-[color:var(--surface-warm)] text-zinc-800",
+                        ].join(" ")}>
+                          {label}
+                        </span>
+                        <span>{opt.content}</span>
+                      </button>
+                    );
+                  })}
                 </div>
-              </div>
 
-              <Card title="Demo controls" description="Bấm để mô phỏng vi phạm">
-                <div className="grid gap-2">
+                <div className="flex items-center justify-between gap-3">
                   <Button
-                    type="button"
                     variant="secondary"
-                    onClick={() => pushViolation("tab_switch", "Bạn vừa rời khỏi tab làm bài.")}
+                    onClick={() => setCurrentQuestionIndex((i) => Math.max(0, i - 1))}
+                    disabled={currentQuestionIndex === 0}
                   >
-                    Simulate tab switch
+                    ← Trước
                   </Button>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => pushViolation("keyboard_copy", "Hành vi copy đã bị ghi nhận.")}
-                    >
-                      Simulate copy
+                  {currentQuestionIndex < questions.length - 1 ? (
+                    <Button onClick={() => setCurrentQuestionIndex((i) => i + 1)}>
+                      Tiếp theo →
                     </Button>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => pushViolation("keyboard_paste", "Hành vi paste đã bị ghi nhận.")}
-                    >
-                      Simulate paste
+                  ) : (
+                    <Button onClick={handleSubmit} variant="danger">
+                      Nộp bài
                     </Button>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={() => pushViolation("camera_multiple_faces", "Phát hiện nhiều khuôn mặt trong khung hình.")}
-                  >
-                    Simulate multiple faces
-                  </Button>
+                  )}
                 </div>
-              </Card>
-
-              <ButtonLink href="/student/join" variant="ghost" className="justify-center">
-                Đổi mã phòng thi
-              </ButtonLink>
-            </div>
-          </Card>
+              </div>
+            </Card>
+          )}
         </div>
       </div>
     </AppShell>
   );
 }
 
-export default function StudentExamRunnerPage() {
+export default function StudentExamPage() {
   return (
     <Suspense>
       <StudentExamRunnerContent />

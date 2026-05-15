@@ -8,18 +8,26 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getRoom, type DemoRoom } from "@/lib/demo-store";
+import { useAuth } from "@/lib/auth-context";
+import { getRoomPublicInfo, type RoomPublicInfo } from "@/lib/api";
 
 export default function StudentJoinPage() {
   const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
-  const [foundRoom, setFoundRoom] = useState<DemoRoom | null>(null);
+  const [foundRoom, setFoundRoom] = useState<RoomPublicInfo | null>(null);
   const [searching, setSearching] = useState(false);
 
-  // Live-search: check PIN as user types (debounced)
   useEffect(() => {
-    const trimmed = pin.trim().toUpperCase();
+    if (authLoading) return;
+    if (!user) { router.push("/login"); return; }
+    if (user.role !== "student") { router.push("/teacher"); return; }
+  }, [user, authLoading, router]);
+
+  // Debounced PIN search
+  useEffect(() => {
+    const trimmed = pin.trim();
     if (trimmed.length < 4) {
       setFoundRoom(null);
       setError(undefined);
@@ -27,54 +35,53 @@ export default function StudentJoinPage() {
     }
 
     setSearching(true);
-    const timeout = setTimeout(() => {
-      const room = getRoom(trimmed);
-      setFoundRoom(room ?? null);
+    const timeout = setTimeout(async () => {
+      const room = await getRoomPublicInfo(trimmed);
+      setFoundRoom(room);
       setSearching(false);
-      if (room) {
-        setError(undefined);
-      }
-    }, 300);
+      if (room) setError(undefined);
+    }, 400);
 
     return () => clearTimeout(timeout);
   }, [pin]);
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const trimmed = pin.trim().toUpperCase();
+    const trimmed = pin.trim();
 
     if (trimmed.length < 4 || trimmed.length > 10) {
       setError("Mã PIN phải từ 4-10 ký tự.");
       return;
     }
 
-    // Check if room exists
-    const room = getRoom(trimmed);
-    if (!room) {
+    if (!foundRoom) {
       setError("Không tìm thấy phòng thi với mã PIN này.");
       return;
     }
 
-    if (room.status === "finished") {
+    if (foundRoom.status === "FINISHED") {
       setError("Phòng thi này đã kết thúc.");
       return;
     }
 
-    if (room.status === "waiting") {
-      setError("Phòng thi chưa bắt đầu. Vui lòng chờ giáo viên mở phòng.");
+    if (foundRoom.status === "INACTIVE") {
+      setError("Phòng thi chưa được mở. Vui lòng chờ giáo viên.");
       return;
     }
 
-    // Room is in_progress → go to exam
-    router.push(`/student/exam?code=${encodeURIComponent(trimmed)}`);
+    // WAITING or ACTIVE → allow entry; student waits for room_start socket event
+    sessionStorage.setItem(`room_${foundRoom.id}_examId`, String(foundRoom.examId));
+    router.push(`/student/exam?roomId=${foundRoom.id}&code=${encodeURIComponent(foundRoom.code)}`);
   };
 
   const statusInfo = foundRoom
-    ? foundRoom.status === "in_progress"
+    ? foundRoom.status === "ACTIVE"
       ? { label: "Đang thi", variant: "success" as const, canJoin: true }
-      : foundRoom.status === "waiting"
-        ? { label: "Chờ bắt đầu", variant: "warning" as const, canJoin: false }
-        : { label: "Đã kết thúc", variant: "danger" as const, canJoin: false }
+      : foundRoom.status === "WAITING"
+        ? { label: "Chờ bắt đầu", variant: "warning" as const, canJoin: true }
+        : foundRoom.status === "FINISHED"
+          ? { label: "Đã kết thúc", variant: "danger" as const, canJoin: false }
+          : { label: "Chưa mở", variant: "default" as const, canJoin: false }
     : null;
 
   return (
@@ -118,7 +125,6 @@ export default function StudentJoinPage() {
               </Button>
             </div>
 
-            {/* Room preview */}
             {searching ? (
               <div className="rounded-xl border-2 border-[color:var(--border)] bg-white p-4 shadow-[3px_3px_0_#1a1a1a]">
                 <div className="grid gap-2">
@@ -135,20 +141,18 @@ export default function StudentJoinPage() {
                       <Badge variant={statusInfo.variant}>{statusInfo.label}</Badge>
                     </div>
                     <div className="mt-1 text-xs text-zinc-500">
-                      PIN: {foundRoom.pin} • Tạo lúc {new Date(foundRoom.createdAt).toLocaleString("vi-VN")}
+                      PIN: {foundRoom.code} • {foundRoom.durationMinutes} phút
                     </div>
                   </div>
-                  {statusInfo.canJoin ? (
-                    <span className="text-xl">✅</span>
-                  ) : (
-                    <span className="text-xl">⏳</span>
-                  )}
+                  {statusInfo.canJoin ? <span className="text-xl">✅</span> : <span className="text-xl">⏳</span>}
                 </div>
                 {!statusInfo.canJoin ? (
                   <div className="mt-3 rounded-lg bg-[color:var(--accent-surface)] px-3 py-2 text-xs font-semibold text-amber-800">
-                    {foundRoom.status === "waiting"
+                    {foundRoom.status === "WAITING"
                       ? "Phòng thi chưa bắt đầu. Vui lòng chờ giáo viên bấm 'Bắt đầu thi'."
-                      : "Phòng thi đã kết thúc. Bạn không thể vào phòng này nữa."}
+                      : foundRoom.status === "FINISHED"
+                        ? "Phòng thi đã kết thúc. Bạn không thể vào phòng này nữa."
+                        : "Phòng thi chưa được mở."}
                   </div>
                 ) : (
                   <div className="mt-3 rounded-lg bg-[color:var(--primary-surface)] px-3 py-2 text-xs font-semibold text-emerald-800">
@@ -166,22 +170,17 @@ export default function StudentJoinPage() {
 
         <Card title="Lưu ý anti-cheat" description="Hệ thống sẽ ghi nhận vi phạm trong khi thi">
           <ul className="grid gap-2 text-sm text-zinc-600">
-            <li className="flex items-center gap-2">
-              <span className="inline-block h-2 w-2 rounded-full border-2 border-[color:var(--border)] bg-[#FFD6DD]" />
-              Không chuyển tab (tab-switch detection)
-            </li>
-            <li className="flex items-center gap-2">
-              <span className="inline-block h-2 w-2 rounded-full border-2 border-[color:var(--border)] bg-[#FFD6DD]" />
-              Không dùng Ctrl+C / Ctrl+V (keyboard logger)
-            </li>
-            <li className="flex items-center gap-2">
-              <span className="inline-block h-2 w-2 rounded-full border-2 border-[color:var(--border)] bg-[#FFD6DD]" />
-              Không click chuột phải (context menu blocked)
-            </li>
-            <li className="flex items-center gap-2">
-              <span className="inline-block h-2 w-2 rounded-full border-2 border-[color:var(--border)] bg-[#FFD6DD]" />
-              Bật camera khi được yêu cầu (fallback nếu từ chối)
-            </li>
+            {[
+              "Không chuyển tab (tab-switch detection)",
+              "Không dùng Ctrl+C / Ctrl+V (keyboard logger)",
+              "Không click chuột phải (context menu blocked)",
+              "Bật camera khi được yêu cầu (fallback nếu từ chối)",
+            ].map((item) => (
+              <li key={item} className="flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full border-2 border-[color:var(--border)] bg-[#FFD6DD]" />
+                {item}
+              </li>
+            ))}
           </ul>
         </Card>
       </div>
