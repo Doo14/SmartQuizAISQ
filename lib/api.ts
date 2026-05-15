@@ -198,6 +198,41 @@ export type TeacherStats = {
   violationRate: number;
 };
 
+export type ViolationTypeCode =
+  | 'TAB_SWITCH'
+  | 'KEYBOARD_COPY'
+  | 'KEYBOARD_PASTE'
+  | 'CAMERA_MULTIPLE_FACES'
+  | 'CAMERA_GAZE_AWAY'
+  | 'CAMERA_MISSING'
+  | 'OTHER';
+
+export type ViolationDetail = {
+  id: number;
+  violationType: ViolationTypeCode;
+  evidenceUrl: string | null;
+  timestamp: string;
+};
+
+export const VIOLATION_TYPE_LABELS: Record<ViolationTypeCode, string> = {
+  TAB_SWITCH: 'Chuyển tab khỏi bài thi',
+  KEYBOARD_COPY: 'Copy (Ctrl+C)',
+  KEYBOARD_PASTE: 'Paste (Ctrl+V)',
+  CAMERA_MULTIPLE_FACES: 'Nhiều khuôn mặt trong khung hình',
+  CAMERA_GAZE_AWAY: 'Nhìn ra ngoài màn hình',
+  CAMERA_MISSING: 'Không phát hiện khuôn mặt / camera',
+  OTHER: 'Vi phạm khác',
+};
+
+export function normalizeViolationType(type: string): ViolationTypeCode {
+  const key = type.toUpperCase().replace(/-/g, '_') as ViolationTypeCode;
+  return key in VIOLATION_TYPE_LABELS ? key : 'OTHER';
+}
+
+export function getViolationLabel(type: string): string {
+  return VIOLATION_TYPE_LABELS[normalizeViolationType(type)];
+}
+
 /* ── Auth ─────────────────────────────────────────────────────────────── */
 
 export async function getMe(): Promise<AuthUser | null> {
@@ -323,6 +358,18 @@ export async function getRoomPublicInfo(code: string): Promise<RoomPublicInfo | 
     return envelope.data ?? null;
   } catch {
     return null;
+  }
+}
+
+/* ── Violations ───────────────────────────────────────────────────────── */
+
+export async function getViolationsByAttempt(attemptId: number): Promise<ViolationDetail[]> {
+  try {
+    const envelope = await api.get<ViolationDetail[]>(`/violations?attemptId=${attemptId}`);
+    const data = envelope.data;
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
   }
 }
 

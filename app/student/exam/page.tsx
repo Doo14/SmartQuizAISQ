@@ -84,21 +84,30 @@ function StudentExamRunnerContent() {
 
     s.emit("join", { code: examCode }, (res: any) => {
       console.log("[Student WS] join:", res);
+      if (res?.error) {
+        toast.push({ title: "Không thể vào phòng thi", message: res.error, variant: "danger" });
+        setLoadingExam(false);
+        return;
+      }
+      // Store attemptId returned from server
+      if (res?.attemptId) {
+        setAttemptId(res.attemptId);
+      }
       if (res?.status === "WAITING") {
         // Room not started yet — show waiting screen
         setWaitingForStart(true);
         setLoadingExam(false);
-      } else if (res?.attemptId) {
-        // Room is ACTIVE, attempt created
-        setAttemptId(res.attemptId);
+      } else if (res?.status === "ACTIVE") {
+        // Room already active — load exam immediately
         setWaitingForStart(false);
+        const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
+        if (storedExamId) loadExam(Number(storedExamId));
       }
     });
 
     // Teacher started the exam — room is now ACTIVE
-    s.on("room_start", (payload: { durationMinutes: number; endTime: string; attemptId?: number }) => {
+    s.on("room_start", (payload: { durationMinutes: number; endTime: string }) => {
       setWaitingForStart(false);
-      if (payload.attemptId) setAttemptId(payload.attemptId);
       const now = Date.now();
       const end = new Date(payload.endTime).getTime();
       const secsLeft = Math.max(0, Math.floor((end - now) / 1000));
@@ -121,6 +130,7 @@ function StudentExamRunnerContent() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, examCode, user, authLoading]);
+
 
   /* ── Load exam questions (only when room is ACTIVE) ─────────────── */
   useEffect(() => {
@@ -182,11 +192,11 @@ function StudentExamRunnerContent() {
     toast.push({ title: titleMap[type], message: description, variant: "danger" });
     window.setTimeout(() => setWarningMessage(null), 4500);
 
-    // Emit to backend
-    if (socketRef.current && roomId && attemptId) {
+    // Emit to backend — send type + description (gateway normalises them)
+    if (socketRef.current && roomId) {
       socketRef.current.emit("violation", {
         roomId,
-        attemptId,
+        attemptId: attemptId ?? undefined,
         type,
         description,
       });
@@ -312,14 +322,26 @@ function StudentExamRunnerContent() {
     setSubmitted(true);
     if (socketRef.current && roomId) {
       socketRef.current.emit("submit", { roomId }, (res: any) => {
-        if (res?.correctCount !== undefined) {
-          const total = questions.length;
-          const score = total > 0 ? parseFloat(((res.correctCount / total) * 10).toFixed(1)) : 0;
-          setResult({ correctCount: res.correctCount, total, score });
+        console.log("[Student WS] submit callback:", res);
+        if (res?.error) {
+          toast.push({
+            title: "Lỗi nộp bài",
+            message: String(res.error),
+            variant: "danger",
+          });
+          setSubmitted(false);
+          return;
         }
+        const correctCount = res?.correctCount ?? 0;
+        const total = res?.totalQuestions ?? questions.length;
+        const score = total > 0 ? parseFloat(((correctCount / total) * 10).toFixed(1)) : 0;
+        setResult({ correctCount, total, score });
       });
+    } else {
+      toast.push({ title: "Mất kết nối", message: "Không thể nộp bài. Vui lòng thử lại.", variant: "danger" });
+      setSubmitted(false);
     }
-  }, [submitted, roomId, questions.length]);
+  }, [submitted, roomId, questions.length, toast]);
 
   const handleSubmit = () => {
     const answeredCount = answers.filter((a) => a !== null).length;

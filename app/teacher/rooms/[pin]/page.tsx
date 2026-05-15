@@ -99,8 +99,11 @@ export default function TeacherRoomDetailPage({
     setSocket(s);
 
     // Join the room
-    s.emit("join", { code: room.code }, (res: string) => {
+    s.emit("join", { code: room.code }, (res: any) => {
       console.log("[Teacher WS] join:", res);
+      if (res?.error) {
+        toast.push({ title: "Lỗi kết nối phòng thi", message: res.error, variant: "danger" });
+      }
     });
 
     // Listen for events
@@ -140,12 +143,17 @@ export default function TeacherRoomDetailPage({
       });
     });
 
-    s.on("student_submit", (payload: { student: { id: number; username: string } }) => {
+    s.on("student_submit", (payload: { student: { id: number; username: string }; correctCount?: number; totalQuestions?: number }) => {
       toast.push({ title: `${payload.student.username} đã nộp bài`, variant: "success" });
       setLeaderboard((prev) =>
         prev.map((e) =>
           e.studentId === payload.student.id
-            ? { ...e, status: "completed", submittedAt: new Date().toISOString() }
+            ? {
+                ...e,
+                status: "completed" as const,
+                submittedAt: new Date().toISOString(),
+                correctCount: payload.correctCount ?? e.correctCount,
+              }
             : e,
         ),
       );
@@ -156,8 +164,9 @@ export default function TeacherRoomDetailPage({
       loadRoom();
     });
 
-    s.on("log_violation", (payload: { student: { id: number; username: string }; type: string }) => {
-      toast.push({ title: `Vi phạm: ${payload.student.username}`, message: payload.type, variant: "danger" });
+    s.on("log_violation", (payload: { student: { id: number; username: string }; violationType?: string; type?: string }) => {
+      const vtype = payload.violationType ?? payload.type ?? "vi phạm";
+      toast.push({ title: `Vi phạm: ${payload.student.username}`, message: vtype, variant: "danger" });
       setLeaderboard((prev) =>
         prev.map((e) =>
           e.studentId === payload.student.id
@@ -182,13 +191,24 @@ export default function TeacherRoomDetailPage({
 
   const handleStart = () => {
     if (!socket || !room) return;
-    socket.emit("start", { id: roomId }, (res: string) => {
+    if (!socket.connected) {
+      toast.push({ title: "Chưa kết nối", message: "Đang kết nối lại máy chủ...", variant: "warning" });
+      connectSocket();
+      return;
+    }
+    socket.emit("start", { id: roomId }, (res: unknown) => {
       console.log("[Teacher WS] start:", res);
       if (res === "Room started") {
         toast.push({ title: "Đã bắt đầu phòng thi!", variant: "success" });
         loadRoom();
       } else {
-        toast.push({ title: "Lỗi", message: res, variant: "danger" });
+        const message =
+          typeof res === "string"
+            ? res
+            : (res as { error?: string; message?: string })?.error ??
+              (res as { message?: string })?.message ??
+              "Không thể bắt đầu phòng thi";
+        toast.push({ title: "Lỗi", message, variant: "danger" });
       }
     });
   };

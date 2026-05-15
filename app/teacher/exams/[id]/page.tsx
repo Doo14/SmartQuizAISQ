@@ -26,6 +26,13 @@ const TEACHER_NAV = [
   { href: "/teacher/results", label: "Kết quả & Vi phạm" },
 ];
 
+function roomStatusBadge(status: RoomSummary["status"]) {
+  if (status === "ACTIVE") return { label: "Đang thi", variant: "warning" as const };
+  if (status === "WAITING") return { label: "Chờ bắt đầu", variant: "success" as const };
+  if (status === "FINISHED") return { label: "Đã kết thúc", variant: "danger" as const };
+  return { label: "Chưa mở", variant: "default" as const };
+}
+
 export default function TeacherExamDetailPage({
   params,
 }: {
@@ -104,14 +111,9 @@ export default function TeacherExamDetailPage({
     );
   }
 
-  const activeRoom = rooms.find((r) => r.status === "WAITING" || r.status === "ACTIVE");
-  const inactiveRooms = rooms.filter((r) => r.status === "INACTIVE");
-  const finishedRooms = rooms.filter((r) => r.status === "FINISHED");
-
   return (
     <AppShell title="Teacher Dashboard" subtitle="Chi tiết đề thi" nav={TEACHER_NAV}>
       <div className="page-stack">
-        {/* Header */}
         <div className="section-head flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-black text-zinc-900">{exam.title}</h1>
@@ -124,7 +126,6 @@ export default function TeacherExamDetailPage({
           </div>
         </div>
 
-        {/* Stats row */}
         <div className="bento-grid">
           <Card title="Câu hỏi" shadow="green">
             <div className="text-3xl font-black text-zinc-900">{exam.questions.length}</div>
@@ -139,113 +140,97 @@ export default function TeacherExamDetailPage({
           </Card>
         </div>
 
-        {/* Active Room */}
-        {activeRoom && (
+        {rooms.length > 0 ? (
           <Card
-            title="Phòng thi đang hoạt động"
-            right={
-              <Badge variant={activeRoom.status === "ACTIVE" ? "warning" : "success"}>
-                {activeRoom.status === "ACTIVE" ? "Đang thi" : "Chờ bắt đầu"}
-              </Badge>
-            }
+            title="Danh sách phòng thi"
+            description="Mỗi phòng có mã PIN riêng — tạo nhiều phòng cho các lớp hoặc ca thi khác nhau"
+            right={<Badge variant="default">{rooms.length} phòng</Badge>}
             shadow="green"
           >
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <div className="text-2xl font-black tracking-widest text-zinc-900">{activeRoom.code}</div>
-                <div className="text-sm text-zinc-500">Mã PIN • {activeRoom.status}</div>
-              </div>
-              <div className="flex gap-2">
-                <ButtonLink href={`/teacher/rooms/${activeRoom.id}`}>Xem phòng thi</ButtonLink>
-              </div>
-            </div>
-          </Card>
-        )}
-
-        {/* Inactive rooms waiting to be opened */}
-        {inactiveRooms.length > 0 && (
-          <Card title="Phòng chưa mở" description={`${inactiveRooms.length} phòng — bấm Mở để bắt đầu chờ học viên`}>
             <div className="grid gap-2">
-              {inactiveRooms.map((r) => (
-                <div
-                  key={r.id}
-                  className="flex items-center justify-between rounded-xl border-2 border-[color:var(--border)] bg-white px-4 py-3 shadow-[2px_2px_0_#1a1a1a]"
-                >
-                  <span className="font-mono text-sm font-bold tracking-wider text-zinc-900">{r.code}</span>
-                  <Button onClick={() => handleOpenRoom(r.id)}>Mở phòng</Button>
-                </div>
-              ))}
-            </div>
-          </Card>
-        )}
-
-        {/* Questions preview */}
-        <Card title="Danh sách câu hỏi" description={`${exam.questions.length} câu`}>
-          {exam.questions.length === 0 ? (
-            <div className="py-4 text-center text-sm text-zinc-500">Đề thi chưa có câu hỏi nào.</div>
-          ) : (
-            <div className="grid gap-3">
-              {exam.questions.map((q, idx) => {
-                const correctOpt = q.options.find((o) => o.isCorrect);
+              {rooms.map((r) => {
+                const { label, variant } = roomStatusBadge(r.status);
                 return (
                   <div
-                    key={q.id}
-                    className="rounded-xl border-2 border-[color:var(--border)] bg-white p-4 shadow-[3px_3px_0_#1a1a1a]"
+                    key={r.id}
+                    className="flex flex-col gap-3 rounded-xl border-2 border-[color:var(--border)] bg-white px-4 py-3 shadow-[2px_2px_0_#1a1a1a] sm:flex-row sm:items-center sm:justify-between"
                   >
-                    <div className="flex items-start gap-3">
-                      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border-2 border-[color:var(--border)] bg-[color:var(--surface-warm)] text-xs font-bold text-zinc-900 shadow-[2px_2px_0_#1a1a1a]">
-                        {idx + 1}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-bold text-zinc-900">{q.content}</div>
-                        <div className="mt-2 grid gap-1.5">
-                          {q.options.map((opt) => (
-                            <div
-                              key={opt.id}
-                              className={[
-                                "flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs",
-                                opt.isCorrect
-                                  ? "border-2 border-emerald-500 bg-[color:var(--surface-mint)] font-bold text-emerald-800"
-                                  : "border border-zinc-200 text-zinc-600",
-                              ].join(" ")}
-                            >
-                              <span>{opt.content}</span>
-                              {opt.isCorrect && <span className="ml-auto text-emerald-600">✓ Đúng</span>}
-                            </div>
-                          ))}
-                        </div>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-lg font-black tracking-widest text-zinc-900">
+                          {r.code}
+                        </span>
+                        <Badge variant={variant}>{label}</Badge>
+                        {r.attemptCount != null && r.attemptCount > 0 && (
+                          <span className="text-xs text-zinc-500">{r.attemptCount} học viên</span>
+                        )}
                       </div>
+                      <p className="mt-0.5 text-xs text-zinc-500">
+                        Chia sẻ mã PIN này cho học viên lớp tương ứng
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      {r.status === "INACTIVE" && (
+                        <Button onClick={() => handleOpenRoom(r.id)}>Mở phòng</Button>
+                      )}
+                      {(r.status === "WAITING" || r.status === "ACTIVE" || r.status === "FINISHED") && (
+                        <ButtonLink href={`/teacher/rooms/${r.id}`}>
+                          {r.status === "FINISHED" ? "Xem kết quả" : "Xem phòng thi"}
+                        </ButtonLink>
+                      )}
                     </div>
                   </div>
                 );
               })}
             </div>
-          )}
-        </Card>
+          </Card>
+        ) : (
+          <Card title="Chưa có phòng thi" description="Tạo phòng để học viên vào thi bằng mã PIN">
+            <Button onClick={handleCreateRoom} className="w-full justify-center sm:w-auto">
+              Tạo phòng thi đầu tiên
+            </Button>
+          </Card>
+        )}
 
-        {/* Finished rooms history */}
-        {finishedRooms.length > 0 && (
-          <Card title="Lịch sử phòng thi" description={`${finishedRooms.length} phòng đã kết thúc`}>
-            <div className="grid gap-2">
-              {finishedRooms.map((r) => (
+        <Card title="Danh sách câu hỏi" description={`${exam.questions.length} câu`}>
+          {exam.questions.length === 0 ? (
+            <div className="py-4 text-center text-sm text-zinc-500">Đề thi chưa có câu hỏi nào.</div>
+          ) : (
+            <div className="grid gap-3">
+              {exam.questions.map((q, idx) => (
                 <div
-                  key={r.id}
-                  className="flex items-center justify-between rounded-xl border-2 border-[color:var(--border)] bg-white px-4 py-3 shadow-[2px_2px_0_#1a1a1a]"
+                  key={q.id}
+                  className="rounded-xl border-2 border-[color:var(--border)] bg-white p-4 shadow-[3px_3px_0_#1a1a1a]"
                 >
-                  <div>
-                    <span className="mr-2 font-mono text-sm font-bold tracking-wider text-zinc-900">{r.code}</span>
-                    <span className="text-xs text-zinc-500">
-                      {r.startedAt ? new Date(r.startedAt).toLocaleString("vi-VN") : "—"}
+                  <div className="flex items-start gap-3">
+                    <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border-2 border-[color:var(--border)] bg-[color:var(--surface-warm)] text-xs font-bold text-zinc-900 shadow-[2px_2px_0_#1a1a1a]">
+                      {idx + 1}
                     </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-bold text-zinc-900">{q.content}</div>
+                      <div className="mt-2 grid gap-1.5">
+                        {q.options.map((opt) => (
+                          <div
+                            key={opt.id}
+                            className={[
+                              "flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs",
+                              opt.isCorrect
+                                ? "border-2 border-emerald-500 bg-[color:var(--surface-mint)] font-bold text-emerald-800"
+                                : "border border-zinc-200 text-zinc-600",
+                            ].join(" ")}
+                          >
+                            <span>{opt.content}</span>
+                            {opt.isCorrect && <span className="ml-auto text-emerald-600">✓ Đúng</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   </div>
-                  <ButtonLink href={`/teacher/rooms/${r.id}`} variant="ghost">
-                    Chi tiết
-                  </ButtonLink>
                 </div>
               ))}
             </div>
-          </Card>
-        )}
+          )}
+        </Card>
       </div>
     </AppShell>
   );

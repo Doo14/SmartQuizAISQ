@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import * as React from "react";
+import { useAuth } from "@/lib/auth-context";
 
 export type NavItem = {
   href: string;
@@ -68,6 +70,13 @@ export function AppShell({
   children: React.ReactNode;
 }) {
   const [mobileOpen, setMobileOpen] = React.useState(false);
+  const { user, loading: authLoading, logout } = useAuth();
+  const router = useRouter();
+
+  const handleLogout = async () => {
+    await logout();
+    router.push("/login");
+  };
 
   return (
     <div className="flex min-h-full flex-1">
@@ -136,16 +145,41 @@ export function AppShell({
             <div className="flex shrink-0 items-center gap-2">
               <Link
                 href="/"
-                className="hidden rounded-full px-3 py-2 text-sm font-semibold text-white/80 hover:text-white hover:bg-white/10 transition sm:inline-flex"
+                className="hidden rounded-full px-3 py-2 text-sm font-semibold text-white/80 transition hover:bg-white/10 hover:text-white sm:inline-flex"
               >
                 Trang chủ
               </Link>
-              <Link
-                href="/login"
-                className="rounded-full border-2 border-white/30 bg-[color:var(--primary)] px-4 py-2 text-sm font-bold text-white shadow-[3px_3px_0_#1a1a1a] hover:shadow-[5px_5px_0_#1a1a1a] transition-all"
-              >
-                Đăng nhập
-              </Link>
+              {authLoading ? (
+                <span className="h-9 w-24 animate-pulse rounded-full bg-white/10" aria-hidden />
+              ) : user ? (
+                <>
+                  <span className="hidden max-w-[140px] truncate rounded-full border-2 border-white/20 bg-white/10 px-3 py-2 text-sm font-bold text-white sm:inline-block">
+                    {user.username}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleLogout()}
+                    className="rounded-full border-2 border-white/30 bg-white/10 px-4 py-2 text-sm font-bold text-white shadow-[3px_3px_0_#1a1a1a] transition-all hover:bg-white/20 hover:shadow-[5px_5px_0_#1a1a1a]"
+                  >
+                    Đăng xuất
+                  </button>
+                </>
+              ) : (
+                <>
+                  <Link
+                    href="/register"
+                    className="hidden rounded-full px-3 py-2 text-sm font-semibold text-white/80 transition hover:bg-white/10 hover:text-white sm:inline-flex"
+                  >
+                    Đăng ký
+                  </Link>
+                  <Link
+                    href="/login"
+                    className="rounded-full border-2 border-white/30 bg-[color:var(--primary)] px-4 py-2 text-sm font-bold text-white shadow-[3px_3px_0_#1a1a1a] transition-all hover:shadow-[5px_5px_0_#1a1a1a]"
+                  >
+                    Đăng nhập
+                  </Link>
+                </>
+              )}
             </div>
           </div>
         </header>

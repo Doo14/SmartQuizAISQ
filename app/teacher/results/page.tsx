@@ -9,7 +9,16 @@ import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonGrid } from "@/components/ui/skeleton";
 import { useAuth } from "@/lib/auth-context";
-import { listExams, getRoomsByExam, getRoomDetail, type Exam, type AttemptSummary } from "@/lib/api";
+import {
+  listExams,
+  getRoomsByExam,
+  getRoomDetail,
+  getViolationsByAttempt,
+  getViolationLabel,
+  type Exam,
+  type AttemptSummary,
+  type ViolationDetail,
+} from "@/lib/api";
 
 const TEACHER_NAV = [
   { href: "/teacher", label: "Tổng quan" },
@@ -24,6 +33,20 @@ type AttemptRow = AttemptSummary & {
   roomId: number;
 };
 
+function violationIcon(type: string): string {
+  const key = type.toUpperCase().replace(/-/g, "_");
+  const icons: Record<string, string> = {
+    TAB_SWITCH: "🔄",
+    KEYBOARD_COPY: "📋",
+    KEYBOARD_PASTE: "📥",
+    CAMERA_MULTIPLE_FACES: "👥",
+    CAMERA_GAZE_AWAY: "👀",
+    CAMERA_MISSING: "📷",
+    OTHER: "⚠️",
+  };
+  return icons[key] ?? "⚠️";
+}
+
 export default function TeacherResultsPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
@@ -33,6 +56,8 @@ export default function TeacherResultsPage() {
   const [selectedExamId, setSelectedExamId] = useState<number | "all">("all");
   const [selectedAttemptId, setSelectedAttemptId] = useState<number | null>(null);
   const [exams, setExams] = useState<Exam[]>([]);
+  const [violations, setViolations] = useState<ViolationDetail[]>([]);
+  const [violationsLoading, setViolationsLoading] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -86,6 +111,24 @@ export default function TeacherResultsPage() {
   const selected = selectedAttemptId !== null
     ? attempts.find((a) => a.id === selectedAttemptId) ?? null
     : null;
+
+  useEffect(() => {
+    if (!selectedAttemptId) {
+      setViolations([]);
+      return;
+    }
+    let cancelled = false;
+    setViolationsLoading(true);
+    getViolationsByAttempt(selectedAttemptId).then((list) => {
+      if (!cancelled) {
+        setViolations(list);
+        setViolationsLoading(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAttemptId]);
 
   const totalViolations = filteredAttempts.reduce((s, a) => s + (a.violationCount ?? 0), 0);
   const avgCorrect = filteredAttempts.length > 0
@@ -147,7 +190,7 @@ export default function TeacherResultsPage() {
         </Card>
 
         {/* Attempts list + detail */}
-        <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
+        <div className="grid gap-4 lg:grid-cols-[1fr_420px]">
           <Card
             title="Danh sách bài thi"
             description={`${filteredAttempts.length} attempts`}
@@ -245,6 +288,49 @@ export default function TeacherResultsPage() {
                     </div>
                   )}
                 </div>
+
+                <div className="border-t border-zinc-200 pt-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <span className="text-sm font-bold text-zinc-900">Chi tiết vi phạm</span>
+                    {selected.violationCount > 0 && (
+                      <Badge variant="danger">{selected.violationCount}</Badge>
+                    )}
+                  </div>
+                  {violationsLoading ? (
+                    <p className="py-4 text-center text-sm text-zinc-400">Đang tải...</p>
+                  ) : violations.length === 0 ? (
+                    <p className="rounded-xl border-2 border-dashed border-zinc-200 bg-zinc-50 px-4 py-6 text-center text-sm text-zinc-500">
+                      {selected.violationCount > 0
+                        ? "Không tải được danh sách vi phạm."
+                        : "Học viên không có vi phạm trong bài thi này."}
+                    </p>
+                  ) : (
+                    <ul className="grid max-h-72 gap-2 overflow-y-auto">
+                      {violations.map((v) => (
+                        <li
+                          key={v.id}
+                          className="rounded-xl border-2 border-[color:var(--border)] bg-[#FFF5F5] px-3 py-2.5 shadow-[2px_2px_0_#991B1B]"
+                        >
+                          <div className="flex items-start gap-2">
+                            <span className="text-base leading-none">{violationIcon(v.violationType)}</span>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-bold text-red-900">
+                                {getViolationLabel(v.violationType)}
+                              </div>
+                              {v.evidenceUrl ? (
+                                <p className="mt-1 text-xs leading-relaxed text-red-800/80">{v.evidenceUrl}</p>
+                              ) : null}
+                              <div className="mt-1 text-[10px] font-semibold text-red-700/60">
+                                {new Date(v.timestamp).toLocaleString("vi-VN")}
+                              </div>
+                            </div>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
                 <ButtonLink href={`/teacher/rooms/${selected.roomId}`} variant="secondary" className="justify-center">
                   Xem phòng thi
                 </ButtonLink>
