@@ -9,7 +9,13 @@ import { Card } from "@/components/ui/card";
 import { useToast } from "@/components/ui/toast";
 import { useAuth } from "@/lib/auth-context";
 import { getExamDetail, type Question } from "@/lib/api";
-import { connectSocket, disconnectSocket, type Socket } from "@/lib/socket";
+import {
+  connectSocket,
+  disconnectSocket,
+  roomIdentification,
+  toBackendViolationType,
+  type Socket,
+} from "@/lib/socket";
 
 // face-api must be loaded dynamically (browser-only, needs TextEncoder)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -82,26 +88,29 @@ function StudentExamRunnerContent() {
     const s = connectSocket();
     socketRef.current = s;
 
-    s.emit("join", { code: examCode }, (res: any) => {
+    if (examCode.length !== 8) {
+      toast.push({
+        title: "Mã PIN không hợp lệ",
+        message: "Mã phòng thi phải đúng 8 ký tự.",
+        variant: "danger",
+      });
+      setLoadingExam(false);
+      return;
+    }
+
+    s.emit("join", roomIdentification(examCode), (res: any) => {
       console.log("[Student WS] join:", res);
       if (res?.error) {
         toast.push({ title: "Không thể vào phòng thi", message: res.error, variant: "danger" });
         setLoadingExam(false);
         return;
       }
-      // Store attemptId returned from server
       if (res?.attemptId) {
         setAttemptId(res.attemptId);
       }
       if (res?.status === "WAITING") {
-        // Room not started yet — show waiting screen
         setWaitingForStart(true);
         setLoadingExam(false);
-      } else if (res?.status === "ACTIVE") {
-        // Room already active — load exam immediately
-        setWaitingForStart(false);
-        const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
-        if (storedExamId) loadExam(Number(storedExamId));
       }
     });
 
@@ -192,13 +201,11 @@ function StudentExamRunnerContent() {
     toast.push({ title: titleMap[type], message: description, variant: "danger" });
     window.setTimeout(() => setWarningMessage(null), 4500);
 
-    // Emit to backend — send type + description (gateway normalises them)
-    if (socketRef.current && roomId) {
+    if (socketRef.current && roomId && attemptId) {
       socketRef.current.emit("violation", {
         roomId,
-        attemptId: attemptId ?? undefined,
-        type,
-        description,
+        attemptId,
+        type: toBackendViolationType(type),
       });
     }
   }, [toast, roomId, attemptId]);
@@ -306,10 +313,10 @@ function StudentExamRunnerContent() {
       return next;
     });
 
-    // Emit to backend
-    if (socketRef.current && roomId) {
+    if (socketRef.current && roomId && examId) {
       socketRef.current.emit("answer", {
         roomId,
+        examId,
         questionId: q.id,
         optionId,
       });
@@ -320,8 +327,8 @@ function StudentExamRunnerContent() {
   const handleAutoSubmit = useCallback(() => {
     if (submitted) return;
     setSubmitted(true);
-    if (socketRef.current && roomId) {
-      socketRef.current.emit("submit", { roomId }, (res: any) => {
+    if (socketRef.current && roomId && examId) {
+      socketRef.current.emit("submit", { roomId, examId }, (res: any) => {
         console.log("[Student WS] submit callback:", res);
         if (res?.error) {
           toast.push({
@@ -341,7 +348,7 @@ function StudentExamRunnerContent() {
       toast.push({ title: "Mất kết nối", message: "Không thể nộp bài. Vui lòng thử lại.", variant: "danger" });
       setSubmitted(false);
     }
-  }, [submitted, roomId, questions.length, toast]);
+  }, [submitted, roomId, examId, questions.length, toast]);
 
   const handleSubmit = () => {
     const answeredCount = answers.filter((a) => a !== null).length;

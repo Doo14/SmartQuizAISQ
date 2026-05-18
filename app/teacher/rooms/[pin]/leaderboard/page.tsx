@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { getRoomDetail, type RoomDetail } from "@/lib/api";
-import { connectSocket, disconnectSocket } from "@/lib/socket";
+import { connectSocket, disconnectSocket, roomIdentification } from "@/lib/socket";
 
 type TabKey = "score" | "accuracy";
 
@@ -147,7 +147,7 @@ export default function LeaderboardPage({
     if (!room) return;
     const s = connectSocket();
 
-    s.emit("join", { code: room.code });
+    s.emit("join", roomIdentification(room.code));
 
     s.on("leaderboard", (payload: { student: { id: number; username: string }; correctCount: number }) => {
       setLeaderboard((prev) => {
@@ -236,7 +236,7 @@ export default function LeaderboardPage({
     s.on("room_time_up", () => loadRoom());
 
     return () => {
-      s.emit("leave", { id: roomId });
+      s.emit("leave", roomIdentification(room.code, roomId));
       s.off("leaderboard");
       s.off("student_submit");
       s.off("student_join");

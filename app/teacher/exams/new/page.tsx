@@ -72,7 +72,7 @@ function parseCsv(text: string): { questions: EditorQuestion[]; rowErrors: strin
   const expectedHeader = ["content", "a", "b", "c", "d", "answer"];
   const header = rows[0].map((x) => x.toLowerCase());
   const validHeader = header.length === expectedHeader.length && expectedHeader.every((e, i) => e === header[i]);
-  if (!validHeader) return { questions: [], rowErrors: [], fatalError: "Header không hợp lệ. Cần: content,A,B,C,D,answer" };
+  if (!validHeader) return { questions: [], rowErrors: [], fatalError: "Header không hợp lệ. Cần: content,a,b,c,d,answer" };
 
   const questions: EditorQuestion[] = [];
   const rowErrors: string[] = [];
@@ -155,7 +155,7 @@ export default function TeacherCreateExamPage() {
     setCsvFileName(file.name);
     setCsvPreview([]); setCsvError(null); setCsvRowErrors([]);
     if (!file.name.toLowerCase().endsWith(".csv")) { setCsvError("Chỉ hỗ trợ file .csv"); return; }
-    const text = await file.text();
+    const text = (await file.text()).replace(/^\uFEFF/, "");
     const parsed = parseCsv(text);
     setCsvPreview(parsed.questions); setCsvRowErrors(parsed.rowErrors);
     if (parsed.fatalError) setCsvError(parsed.fatalError);
@@ -250,17 +250,25 @@ export default function TeacherCreateExamPage() {
 
   /* Excel import via backend (for .xlsx) */
   const [xlsxFile, setXlsxFile] = useState<File | null>(null);
-  const [xlsxExamId, setXlsxExamId] = useState<number | null>(null);
   const handleXlsxImport = async () => {
     if (!xlsxFile || !title.trim()) {
       toast.push({ title: "Cần nhập tiêu đề và chọn file", variant: "warning" }); return;
     }
+    const duration = Number(durationMinutes);
+    if (!isFinite(duration) || duration <= 0) {
+      toast.push({ title: "Thời lượng không hợp lệ", message: "Nhập số phút lớn hơn 0.", variant: "warning" });
+      return;
+    }
     setSaving(true);
     try {
-      const { id: examId } = await createExam({
+      const created = await createExam({
         title: title.trim(), description: description.trim() || undefined,
-        durationMinutes: Number(durationMinutes) || 15, questions: [],
+        durationMinutes: duration, questions: [],
       });
+      if (!created?.id) {
+        throw new ApiError(500, "Tạo đề thi thành công nhưng không nhận được mã đề.");
+      }
+      const examId = created.id;
       await importExamExcel(examId, xlsxFile);
       toast.push({ title: "Import Excel thành công!", variant: "success" });
       router.push(`/teacher/exams/${examId}`);
@@ -333,8 +341,8 @@ export default function TeacherCreateExamPage() {
           {tab === "excel" && (
             <div className="grid gap-4">
               <div className="text-sm text-zinc-600">
-                <strong>CSV format:</strong> <code>content,A,B,C,D,answer</code> (header bắt buộc)<br />
-                <strong>Excel/XLSX:</strong> Upload file Excel, backend tự xử lý.
+                <strong>Định dạng file:</strong> <code>content,a,b,c,d,answer</code> (header bắt buộc, không phân biệt hoa thường)<br />
+                <strong>Excel/CSV:</strong> Upload <code>.xlsx</code>, <code>.xls</code> hoặc <code>.csv</code> — backend tự parse.
               </div>
 
               {/* CSV section */}
@@ -361,7 +369,7 @@ export default function TeacherCreateExamPage() {
               <div className="grid gap-2 border-t-2 border-dashed border-zinc-200 pt-4">
                 <div className="text-xs font-bold text-zinc-700 uppercase">Excel/XLSX (backend parse)</div>
                 <p className="text-xs text-zinc-500">Nhập tiêu đề đề thi trước, sau đó upload file Excel.</p>
-                <input type="file" accept=".xlsx,.xls" onChange={(e) => setXlsxFile(e.target.files?.[0] ?? null)}
+                <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setXlsxFile(e.target.files?.[0] ?? null)}
                   className="block w-full rounded-xl border-2 border-[color:var(--border)] bg-white px-3 py-2 text-sm text-zinc-700 shadow-[3px_3px_0_#1a1a1a] file:mr-3 file:rounded-lg file:border-2 file:border-[color:var(--border)] file:bg-[color:var(--accent-surface)] file:px-3 file:py-1.5 file:font-bold file:text-zinc-700"
                 />
                 <Button type="button" onClick={handleXlsxImport} disabled={!xlsxFile || saving}>

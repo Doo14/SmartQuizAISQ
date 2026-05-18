@@ -15,6 +15,7 @@ import {
   getRoomsByExam,
   createRoom,
   openRoom,
+  ApiError,
   type ExamDetail,
   type RoomSummary,
 } from "@/lib/api";
@@ -75,8 +76,9 @@ export default function TeacherExamDetailPage({
       const room = await createRoom(Number(id));
       toast.push({ title: "Tạo phòng thành công", message: `Code: ${room.code}`, variant: "success" });
       reload();
-    } catch {
-      toast.push({ title: "Lỗi tạo phòng thi", variant: "danger" });
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : "Không thể tạo phòng thi.";
+      toast.push({ title: "Lỗi tạo phòng thi", message, variant: "danger" });
     }
   };
 
@@ -85,8 +87,9 @@ export default function TeacherExamDetailPage({
       await openRoom(roomId);
       toast.push({ title: "Phòng thi đã mở!", message: "Học viên có thể vào phòng bằng mã PIN.", variant: "success" });
       reload();
-    } catch {
-      toast.push({ title: "Lỗi mở phòng thi", variant: "danger" });
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : "Không thể mở phòng thi.";
+      toast.push({ title: "Lỗi mở phòng thi", message, variant: "danger" });
     }
   };
 

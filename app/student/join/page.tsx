@@ -25,10 +25,10 @@ export default function StudentJoinPage() {
     if (user.role !== "student") { router.push("/teacher"); return; }
   }, [user, authLoading, router]);
 
-  // Debounced PIN search
+  // Debounced PIN search (backend requires exactly 8 characters)
   useEffect(() => {
     const trimmed = pin.trim();
-    if (trimmed.length < 4) {
+    if (trimmed.length !== 8) {
       setFoundRoom(null);
       setError(undefined);
       return;
@@ -49,8 +49,8 @@ export default function StudentJoinPage() {
     event.preventDefault();
     const trimmed = pin.trim();
 
-    if (trimmed.length < 4 || trimmed.length > 10) {
-      setError("Mã PIN phải từ 4-10 ký tự.");
+    if (trimmed.length !== 8) {
+      setError("Mã PIN phải đúng 8 ký tự.");
       return;
     }
 
@@ -69,16 +69,16 @@ export default function StudentJoinPage() {
       return;
     }
 
-    // WAITING or ACTIVE → allow entry; student waits for room_start socket event
+    // Only WAITING — student must join before teacher starts (ACTIVE rejects new joins)
     sessionStorage.setItem(`room_${foundRoom.id}_examId`, String(foundRoom.examId));
     router.push(`/student/exam?roomId=${foundRoom.id}&code=${encodeURIComponent(foundRoom.code)}`);
   };
 
   const statusInfo = foundRoom
-    ? foundRoom.status === "ACTIVE"
-      ? { label: "Đang thi", variant: "success" as const, canJoin: true }
-      : foundRoom.status === "WAITING"
-        ? { label: "Chờ bắt đầu", variant: "warning" as const, canJoin: true }
+    ? foundRoom.status === "WAITING"
+      ? { label: "Chờ bắt đầu", variant: "warning" as const, canJoin: true }
+      : foundRoom.status === "ACTIVE"
+        ? { label: "Đang thi", variant: "success" as const, canJoin: false }
         : foundRoom.status === "FINISHED"
           ? { label: "Đã kết thúc", variant: "danger" as const, canJoin: false }
           : { label: "Chưa mở", variant: "default" as const, canJoin: false }
@@ -114,7 +114,8 @@ export default function StudentJoinPage() {
                   if (error) setError(undefined);
                 }}
                 error={error}
-                hint={!error && !foundRoom ? "Nhập mã 4-10 ký tự do giáo viên cung cấp." : undefined}
+                hint={!error && !foundRoom ? "Nhập đúng 8 ký tự do giáo viên cung cấp." : undefined}
+                maxLength={8}
               />
               <Button
                 type="submit"
@@ -148,19 +149,19 @@ export default function StudentJoinPage() {
                 </div>
                 {!statusInfo.canJoin ? (
                   <div className="mt-3 rounded-lg bg-[color:var(--accent-surface)] px-3 py-2 text-xs font-semibold text-amber-800">
-                    {foundRoom.status === "WAITING"
-                      ? "Phòng thi chưa bắt đầu. Vui lòng chờ giáo viên bấm 'Bắt đầu thi'."
+                    {foundRoom.status === "ACTIVE"
+                      ? "Phòng đã bắt đầu. Bạn cần vào phòng trước khi giáo viên bấm \"Bắt đầu thi\"."
                       : foundRoom.status === "FINISHED"
                         ? "Phòng thi đã kết thúc. Bạn không thể vào phòng này nữa."
-                        : "Phòng thi chưa được mở."}
+                        : "Phòng thi chưa được mở. Vui lòng chờ giáo viên."}
                   </div>
                 ) : (
                   <div className="mt-3 rounded-lg bg-[color:var(--primary-surface)] px-3 py-2 text-xs font-semibold text-emerald-800">
-                    Phòng thi đang mở! Bấm <strong>Vào thi</strong> để bắt đầu làm bài.
+                    Phòng đang chờ! Bấm <strong>Vào thi</strong> để vào phòng, sau đó chờ giáo viên bắt đầu.
                   </div>
                 )}
               </div>
-            ) : pin.trim().length >= 4 && !searching ? (
+            ) : pin.trim().length === 8 && !searching ? (
               <div className="rounded-xl border-2 border-dashed border-zinc-300 bg-zinc-50 p-4 text-center">
                 <span className="text-sm text-zinc-400">Không tìm thấy phòng thi với mã PIN này.</span>
               </div>

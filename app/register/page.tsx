@@ -33,8 +33,8 @@ export default function RegisterPage() {
       setError("Mật khẩu nhập lại không khớp.");
       return;
     }
-    if (password.length < 8) {
-      setError("Mật khẩu phải có ít nhất 8 ký tự.");
+    if (password.length < 8 || password.length > 20) {
+      setError("Mật khẩu phải từ 8 đến 20 ký tự.");
       return;
     }
     setLoading(true);
