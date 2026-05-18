@@ -12,7 +12,7 @@ Mục tiêu của file này: lưu lại **bối cảnh + tiến độ UI** để
 - Trong khi thi có **anti-cheat** (tab switch / keyboard / camera) và log vi phạm realtime
 - Nộp bài → xem điểm + xem lại đáp án + xem vi phạm
 
-Backend do thành viên khác trong team phụ trách. Frontend hiện đang làm dạng **demo chạy thật bằng mock + localStorage**, để trình bày flow và UI.
+Backend do thành viên khác trong team phụ trách. Frontend hiện đã được tích hợp với API thật và Real-time WebSocket thay vì dùng mock/localStorage như lúc trước.
 
 ---
 
@@ -56,8 +56,8 @@ Backend do thành viên khác trong team phụ trách. Frontend hiện đang là
     - counters
     - Demo controls simulate vi phạm
     - tab-switch detection bằng `visibilitychange`
-  - Submit: lưu attempt + violations vào localStorage (demo-store) + điều hướng sang result
-- `/student/result`: tính điểm từ mock answer key + review từng câu
+  - Submit: gọi API lưu attempt + violations + điều hướng sang result
+- `/student/result`: tính điểm từ API trả về + review từng câu
 
 ### Teacher create exam “chạy thật” (demo)
 - `/teacher/exams/new`:
@@ -66,8 +66,8 @@ Backend do thành viên khác trong team phụ trách. Frontend hiện đang là
     - Manual editor (add/edit/delete/reorder, chọn đáp án đúng)
     - “Excel import” (demo bằng CSV): upload `.csv` → validate → preview → import vào editor
     - AI generate (mock): topic/count/difficulty → preview → apply vào editor
-  - Save: sinh code + lưu vào localStorage
-- `/teacher/exams`: đọc danh sách đề từ localStorage, show stats attempt/violations
+  - Save: gọi API tạo đề thi
+- `/teacher/exams`: gọi API lấy danh sách đề, show stats attempt/violations
 
 ### Teacher results drill-down
 - `/teacher/results`:
@@ -77,18 +77,9 @@ Backend do thành viên khác trong team phụ trách. Frontend hiện đang là
 
 ---
 
-## 3) Demo data storage (localStorage)
+## 3) API & WebSocket (Đã tích hợp)
 
-File: `lib/demo-store.ts`
-
-Keys:
-- `smartquiz.demo.exams.v1`: danh sách exams (metadata + questionCount)
-- `smartquiz.demo.examQuestions.v1.<examId>`: câu hỏi chi tiết của exam (editor)
-- `smartquiz.demo.attempts.v1`: attempts khi student nộp bài
-- `smartquiz.demo.violations.v1`: violation logs khi student simulate/trigger vi phạm
-
-Ghi chú:
-- Đây là storage phục vụ demo UI, backend team sẽ thay bằng API sau.
+Dự án hiện đã kết nối với Backend NestJS thông qua `lib/api.ts` và `lib/socket.ts`. Toàn bộ dữ liệu trước đây dùng `demo-store.ts` (localStorage) đã bị xóa bỏ. Mọi thao tác như tạo phòng, làm bài, theo dõi hành vi đều thông qua API.
 
 ---
 
