@@ -12,7 +12,7 @@ import { SkeletonGrid } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { useAuth } from "@/lib/auth-context";
 import { getRoomDetail, type RoomDetail, type AttemptSummary } from "@/lib/api";
-import { connectSocket, disconnectSocket, type Socket } from "@/lib/socket";
+import { connectSocket, disconnectSocket, roomIdentification, type Socket } from "@/lib/socket";
 
 const TEACHER_NAV = [
   { href: "/teacher", label: "Tổng quan" },
@@ -99,7 +99,7 @@ export default function TeacherRoomDetailPage({
     setSocket(s);
 
     // Join the room
-    s.emit("join", { code: room.code }, (res: any) => {
+    s.emit("join", roomIdentification(room.code), (res: any) => {
       console.log("[Teacher WS] join:", res);
       if (res?.error) {
         toast.push({ title: "Lỗi kết nối phòng thi", message: res.error, variant: "danger" });
@@ -177,7 +177,7 @@ export default function TeacherRoomDetailPage({
     });
 
     return () => {
-      s.emit("leave", { id: roomId });
+      s.emit("leave", roomIdentification(room.code, roomId));
       s.off("student_join");
       s.off("room_start");
       s.off("leaderboard");
@@ -196,7 +196,7 @@ export default function TeacherRoomDetailPage({
       connectSocket();
       return;
     }
-    socket.emit("start", { id: roomId }, (res: unknown) => {
+    socket.emit("start", roomIdentification(room.code, roomId), (res: unknown) => {
       console.log("[Teacher WS] start:", res);
       if (res === "Room started") {
         toast.push({ title: "Đã bắt đầu phòng thi!", variant: "success" });

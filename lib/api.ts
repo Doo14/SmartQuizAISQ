@@ -380,8 +380,9 @@ export async function getStudentHistory(
   offset = 0,
 ): Promise<{ history: HistoryItem[]; total: number }> {
   try {
+    const page = limit > 0 ? Math.floor(offset / limit) + 1 : 1;
     const envelope = await api.get<{ history: HistoryItem[]; total: number }>(
-      `/rooms/history?limit=${limit}&offset=${offset}`,
+      `/rooms/history?page=${page}&size=${limit}`,
     );
     return envelope.data ?? { history: [], total: 0 };
   } catch {
