@@ -9,9 +9,9 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
 import { useAuth } from "@/lib/auth-context";
-import { createExam, importExamExcel, generateAiQuestions, getExamDetail, ApiError } from "@/lib/api";
+import { createExam, generateAiQuestions, getExamDetail, ApiError } from "@/lib/api";
 
-type TabKey = "excel" | "manual" | "ai";
+type TabKey = "csv" | "manual" | "ai";
 type OptionId = "A" | "B" | "C" | "D";
 
 type EditorQuestion = {
@@ -105,7 +105,7 @@ export default function TeacherCreateExamPage() {
   const [durationMinutes, setDurationMinutes] = useState("15");
   const [questions, setQuestions] = useState<EditorQuestion[]>([createEmptyQuestion()]);
 
-  // Excel tab
+  // CSV import tab
   const [csvFileName, setCsvFileName] = useState("");
   const [csvPreview, setCsvPreview] = useState<EditorQuestion[]>([]);
   const [csvError, setCsvError] = useState<string | null>(null);
@@ -148,7 +148,7 @@ export default function TeacherCreateExamPage() {
       return next;
     });
 
-  /* Excel handlers */
+  /* CSV handlers */
   const onCsvSelected = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -248,38 +248,6 @@ export default function TeacherCreateExamPage() {
     }
   };
 
-  /* Excel import via backend (for .xlsx) */
-  const [xlsxFile, setXlsxFile] = useState<File | null>(null);
-  const handleXlsxImport = async () => {
-    if (!xlsxFile || !title.trim()) {
-      toast.push({ title: "Cần nhập tiêu đề và chọn file", variant: "warning" }); return;
-    }
-    const duration = Number(durationMinutes);
-    if (!isFinite(duration) || duration <= 0) {
-      toast.push({ title: "Thời lượng không hợp lệ", message: "Nhập số phút lớn hơn 0.", variant: "warning" });
-      return;
-    }
-    setSaving(true);
-    try {
-      const created = await createExam({
-        title: title.trim(), description: description.trim() || undefined,
-        durationMinutes: duration, questions: [],
-      });
-      if (!created?.id) {
-        throw new ApiError(500, "Tạo đề thi thành công nhưng không nhận được mã đề.");
-      }
-      const examId = created.id;
-      await importExamExcel(examId, xlsxFile);
-      toast.push({ title: "Import Excel thành công!", variant: "success" });
-      router.push(`/teacher/exams/${examId}`);
-    } catch (err) {
-      const msg = err instanceof ApiError ? err.message : "Lỗi import Excel";
-      toast.push({ title: "Lỗi", message: msg, variant: "danger" });
-    } finally {
-      setSaving(false);
-    }
-  };
-
   return (
     <AppShell
       title="Teacher Dashboard"
@@ -287,7 +255,7 @@ export default function TeacherCreateExamPage() {
       nav={[
         { href: "/teacher", label: "Tổng quan" },
         { href: "/teacher/exams", label: "Danh sách đề" },
-        { href: "/teacher/exams/new", label: "Tạo đề mới", badge: "Excel/Manual/AI" },
+        { href: "/teacher/exams/new", label: "Tạo đề mới", badge: "CSV/Manual/AI" },
         { href: "/teacher/results", label: "Kết quả & Vi phạm" },
       ]}
     >
@@ -295,7 +263,7 @@ export default function TeacherCreateExamPage() {
         <div className="section-head flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-black text-zinc-900">Tạo đề thi</h1>
-            <p className="mt-1 text-sm text-zinc-600">Nhập metadata, soạn câu hỏi bằng Manual hoặc import CSV/Excel / AI.</p>
+            <p className="mt-1 text-sm text-zinc-600">Nhập metadata, soạn câu hỏi bằng Manual, import CSV hoặc AI.</p>
           </div>
           <Badge variant="success">Kết nối backend</Badge>
         </div>
@@ -320,7 +288,7 @@ export default function TeacherCreateExamPage() {
         {/* Question Builder */}
         <Card title="Question Builder" description={`Đã có ${questions.length} câu • đã nhập nội dung ${answeredCount} câu`}>
           <div className="mb-5 flex flex-wrap gap-2">
-            {(["excel", "manual", "ai"] as const).map((item) => (
+            {(["csv", "manual", "ai"] as const).map((item) => (
               <button
                 key={item}
                 type="button"
@@ -332,20 +300,19 @@ export default function TeacherCreateExamPage() {
                     : "bg-white text-zinc-700 shadow-[3px_3px_0_#1a1a1a] hover:shadow-[5px_5px_0_#1a1a1a]",
                 ].join(" ")}
               >
-                {item === "excel" ? "Excel/CSV Import" : item === "manual" ? "Manual" : "AI Generate"}
+                {item === "csv" ? "CSV Import" : item === "manual" ? "Manual" : "AI Generate"}
               </button>
             ))}
           </div>
 
-          {/* Excel tab */}
-          {tab === "excel" && (
+          {/* CSV import tab */}
+          {tab === "csv" && (
             <div className="grid gap-4">
               <div className="text-sm text-zinc-600">
-                <strong>Định dạng file:</strong> <code>content,a,b,c,d,answer</code> (header bắt buộc, không phân biệt hoa thường)<br />
-                <strong>Excel/CSV:</strong> Upload <code>.xlsx</code>, <code>.xls</code> hoặc <code>.csv</code> — backend tự parse.
+                <strong>Định dạng file:</strong> <code>content,a,b,c,d,answer</code> (header bắt buộc, không phân biệt hoa thường).
+                Chọn file <code>.csv</code> — parse trên trình duyệt, sau đó bấm Import vào Manual để chỉnh sửa / lưu.
               </div>
 
-              {/* CSV section */}
               <div className="grid gap-2">
                 <div className="text-xs font-bold text-zinc-700 uppercase">CSV (client-side parse)</div>
                 <input type="file" accept=".csv,text/csv" onChange={onCsvSelected}
@@ -363,18 +330,6 @@ export default function TeacherCreateExamPage() {
                     <Button type="button" onClick={importCsvToManual}>Import {csvPreview.length} câu vào Manual</Button>
                   </div>
                 )}
-              </div>
-
-              {/* Excel/XLSX section */}
-              <div className="grid gap-2 border-t-2 border-dashed border-zinc-200 pt-4">
-                <div className="text-xs font-bold text-zinc-700 uppercase">Excel/XLSX (backend parse)</div>
-                <p className="text-xs text-zinc-500">Nhập tiêu đề đề thi trước, sau đó upload file Excel.</p>
-                <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setXlsxFile(e.target.files?.[0] ?? null)}
-                  className="block w-full rounded-xl border-2 border-[color:var(--border)] bg-white px-3 py-2 text-sm text-zinc-700 shadow-[3px_3px_0_#1a1a1a] file:mr-3 file:rounded-lg file:border-2 file:border-[color:var(--border)] file:bg-[color:var(--accent-surface)] file:px-3 file:py-1.5 file:font-bold file:text-zinc-700"
-                />
-                <Button type="button" onClick={handleXlsxImport} disabled={!xlsxFile || saving}>
-                  {saving ? "Đang xử lý..." : "Upload Excel & Tạo đề"}
-                </Button>
               </div>
             </div>
           )}

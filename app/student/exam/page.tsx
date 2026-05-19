@@ -74,6 +74,12 @@ function StudentExamRunnerContent() {
   // Waiting for teacher to start the room
   const [waitingForStart, setWaitingForStart] = useState(false);
 
+  /** Chỉ giám sát khi đang làm bài — không tính vi phạm lúc chờ GV hoặc đang tải đề. */
+  const antiCheatActive = useMemo(
+    () => !waitingForStart && !submitted && questions.length > 0,
+    [waitingForStart, submitted, questions.length],
+  );
+
   /* ── Auth guard ───────────────────────────────────────────────────── */
   useEffect(() => {
     if (authLoading) return;
@@ -210,8 +216,9 @@ function StudentExamRunnerContent() {
     }
   }, [toast, roomId, attemptId]);
 
-  /* ── Anti-cheat: camera ─────────────────────────────────────────── */
+  /* ── Anti-cheat: camera (chỉ khi đang làm bài) ───────────────────── */
   useEffect(() => {
+    if (!antiCheatActive) return;
     const loadModels = async () => {
       try {
         // Dynamic import to avoid SSR TextEncoder issue
@@ -227,11 +234,11 @@ function StudentExamRunnerContent() {
         setCameraError(`Lỗi tải AI: ${err.message || err}`);
       }
     };
-    loadModels();
-  }, []);
+    void loadModels();
+  }, [antiCheatActive]);
 
   useEffect(() => {
-    if (!modelsLoaded) return;
+    if (!antiCheatActive || !modelsLoaded) return;
     let stream: MediaStream | null = null;
     const startVideo = async () => {
       try {
@@ -242,12 +249,12 @@ function StudentExamRunnerContent() {
         pushViolation("camera_missing", "Người dùng từ chối quyền truy cập camera.");
       }
     };
-    startVideo();
+    void startVideo();
     return () => { stream?.getTracks().forEach((t) => t.stop()); };
-  }, [modelsLoaded, pushViolation]);
+  }, [antiCheatActive, modelsLoaded, pushViolation]);
 
   useEffect(() => {
-    if (!modelsLoaded || cameraError) return;
+    if (!antiCheatActive || !modelsLoaded || cameraError) return;
     const fa = faceapiRef.current;
     if (!fa) return;
     const interval = window.setInterval(async () => {
@@ -268,19 +275,21 @@ function StudentExamRunnerContent() {
       }
     }, 3000);
     return () => clearInterval(interval);
-  }, [modelsLoaded, cameraError, pushViolation]);
+  }, [antiCheatActive, modelsLoaded, cameraError, pushViolation]);
 
-  /* ── Anti-cheat: tab / keyboard / context ───────────────────────── */
+  /* ── Anti-cheat: tab / keyboard / context (chỉ khi đang làm bài) ─── */
   useEffect(() => {
+    if (!antiCheatActive) return;
     const onVisibility = () => {
       if (document.visibilityState === "hidden")
         pushViolation("tab_switch", "Bạn vừa rời khỏi tab làm bài.");
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, [pushViolation]);
+  }, [antiCheatActive, pushViolation]);
 
   useEffect(() => {
+    if (!antiCheatActive) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "c") {
         e.preventDefault();
@@ -293,13 +302,14 @@ function StudentExamRunnerContent() {
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [pushViolation]);
+  }, [antiCheatActive, pushViolation]);
 
   useEffect(() => {
+    if (!antiCheatActive) return;
     const onCtxMenu = (e: MouseEvent) => e.preventDefault();
     document.addEventListener("contextmenu", onCtxMenu);
     return () => document.removeEventListener("contextmenu", onCtxMenu);
-  }, []);
+  }, [antiCheatActive]);
 
   /* ── Select answer ──────────────────────────────────────────────── */
   const handleSelectOption = (optionId: number) => {
