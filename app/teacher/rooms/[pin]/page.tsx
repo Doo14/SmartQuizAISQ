@@ -12,7 +12,7 @@ import { SkeletonGrid } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { useAuth } from "@/lib/auth-context";
 import { getRoomDetail, type RoomDetail, type AttemptSummary } from "@/lib/api";
-import { connectSocket, disconnectSocket, roomIdentification, type Socket } from "@/lib/socket";
+import { connectSocket, leaveQuizSocketRoom, roomIdentification, type Socket } from "@/lib/socket";
 
 const TEACHER_NAV = [
   { href: "/teacher", label: "Tổng quan" },
@@ -92,56 +92,82 @@ export default function TeacherRoomDetailPage({
     loadRoom();
   }, [user, authLoading, router, loadRoom]);
 
+  const roomCode = room?.code;
+  const roomStatus = room?.status;
+
   /* Socket.IO connection */
   useEffect(() => {
-    if (!room) return;
+    if (!roomCode) return;
     const s = connectSocket();
+    if (!s.connected) s.connect();
     setSocket(s);
 
-    // Join the room
-    s.emit("join", roomIdentification(room.code), (res: any) => {
-      console.log("[Teacher WS] join:", res);
+    s.emit("join", roomIdentification(roomCode, roomId), (res: { error?: string }) => {
       if (res?.error) {
         toast.push({ title: "Lỗi kết nối phòng thi", message: res.error, variant: "danger" });
       }
     });
 
-    // Listen for events
-    s.on("student_join", (payload: { username: string; id: number }) => {
+    s.on("student_join", (payload: { username: string; id: number; attemptId?: number }) => {
       toast.push({ title: `${payload.username} đã vào phòng`, variant: "success" });
-      loadRoom();
+      setLeaderboard((prev) => {
+        if (prev.some((e) => e.studentId === payload.id)) return prev;
+        return [
+          ...prev,
+          {
+            studentId: payload.id,
+            username: payload.username,
+            correctCount: 0,
+            answerCount: 0,
+            violationCount: 0,
+            status: "in_progress" as const,
+          },
+        ];
+      });
     });
 
     s.on("room_start", (payload: { startTime: string; endTime: string; durationMinutes: number }) => {
       toast.push({ title: "Phòng thi đã bắt đầu!", message: `Thời gian: ${payload.durationMinutes} phút`, variant: "success" });
-      loadRoom();
+      void loadRoom();
     });
 
-    s.on("leaderboard", (payload: { student: { id: number; username: string }; isCorrect: boolean; correctCount: number }) => {
-      setLeaderboard((prev) => {
-        const existing = prev.find((e) => e.studentId === payload.student.id);
-        if (existing) {
-          return prev
-            .map((e) =>
-              e.studentId === payload.student.id
-                ? { ...e, correctCount: payload.correctCount, answerCount: e.answerCount + 1 }
-                : e,
-            )
-            .sort((a, b) => b.correctCount - a.correctCount);
-        }
-        return [
-          ...prev,
-          {
-            studentId: payload.student.id,
-            username: payload.student.username,
-            correctCount: payload.correctCount,
-            answerCount: 1,
-            violationCount: 0,
-            status: "in_progress" as const,
-          },
-        ].sort((a, b) => b.correctCount - a.correctCount);
-      });
-    });
+    s.on(
+      "leaderboard",
+      (payload: {
+        student: { id: number; username: string };
+        correctCount: number;
+        answeredCount: number;
+        totalQuestions: number;
+      }) => {
+        setLeaderboard((prev) => {
+          const existing = prev.find((e) => e.studentId === payload.student.id);
+          if (existing) {
+            return prev
+              .map((e) =>
+                e.studentId === payload.student.id
+                  ? {
+                      ...e,
+                      correctCount: payload.correctCount,
+                      answerCount: payload.answeredCount,
+                    }
+                  : e,
+              )
+              .sort((a, b) => b.correctCount - a.correctCount);
+          }
+          return [
+            ...prev,
+            {
+              studentId: payload.student.id,
+              username: payload.student.username,
+              correctCount: payload.correctCount,
+              answerCount: payload.answeredCount,
+              violationCount: 0,
+              status: "in_progress" as const,
+            },
+          ].sort((a, b) => b.correctCount - a.correctCount);
+        });
+      },
+    );
 
     s.on("student_submit", (payload: { student: { id: number; username: string }; correctCount?: number; totalQuestions?: number }) => {
       toast.push({ title: `${payload.student.username} đã nộp bài`, variant: "success" });
@@ -161,7 +187,14 @@ export default function TeacherRoomDetailPage({
 
     s.on("room_time_up", () => {
       toast.push({ title: "Hết giờ!", message: "Phòng thi đã kết thúc.", variant: "warning" });
-      loadRoom();
+      void loadRoom();
+    });
+
+    s.on("force_submit", () => void loadRoom());
+
+    s.on("room_ended", () => {
+      setRoom((prev) => (prev ? { ...prev, status: "FINISHED" } : prev));
+      void loadRoom();
     });
 
     s.on("log_violation", (payload: { student: { id: number; username: string }; violationType?: string; type?: string }) => {
@@ -177,17 +210,23 @@ export default function TeacherRoomDetailPage({
     });
 
     return () => {
-      s.emit("leave", roomIdentification(room.code, roomId));
+      leaveQuizSocketRoom(roomCode, roomId);
       s.off("student_join");
       s.off("room_start");
       s.off("leaderboard");
       s.off("student_submit");
       s.off("room_time_up");
       s.off("log_violation");
-      disconnectSocket();
+      s.off("force_submit");
+      s.off("room_ended");
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [room?.code]);
+  }, [roomCode, roomId, loadRoom, toast]);
+
+  useEffect(() => {
+    if (roomStatus !== "ACTIVE") return;
+    const timer = setInterval(() => void loadRoom(), 8000);
+    return () => clearInterval(timer);
+  }, [roomStatus, loadRoom]);
 
   const handleStart = () => {
     if (!socket || !room) return;

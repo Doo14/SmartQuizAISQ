@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { getRoomDetail, getViolationsByAttempt, getViolationLabel, type RoomDetail, type ViolationDetail } from "@/lib/api";
-import { connectSocket, disconnectSocket, roomIdentification } from "@/lib/socket";
+import { applyLeaderboardAnswer } from "@/lib/leaderboard-live";
+import { connectSocket, leaveQuizSocketRoom, roomIdentification } from "@/lib/socket";
 import { motion, AnimatePresence } from "framer-motion";
 import Confetti from "react-confetti";
 import { AlertTriangle, Flame, X, ShieldAlert, Award, TrendingUp, BarChart2 } from "lucide-react";
@@ -161,50 +162,43 @@ export default function LeaderboardPage({
     loadRoom();
   }, [user, authLoading, router, loadRoom]);
 
+  const roomCode = room?.code;
+  const totalQuestions = room?.exam.questionCount ?? 0;
+  const roomStatus = room?.status;
+
   useEffect(() => {
-    if (!room) return;
+    if (!roomCode) return;
     const s = connectSocket();
+    if (!s.connected) s.connect();
 
-    s.emit("join", roomIdentification(room.code));
+    s.emit("join", roomIdentification(roomCode, roomId));
 
-    s.on("leaderboard", (payload: { student: { id: number; username: string }; correctCount: number }) => {
-      setLeaderboard((prev) => {
-        const total = room.exam.questionCount;
-        const existing = prev.find((e) => e.studentId === payload.student.id);
-        if (existing) {
-          const answeredCount = existing.answeredCount + 1;
-          return prev.map((e) =>
-            e.studentId === payload.student.id
-              ? {
-                  ...e,
-                  correctCount: payload.correctCount,
-                  answeredCount,
-                  currentQuestion: Math.min(answeredCount + 1, total),
-                  accuracy:
-                    answeredCount > 0
-                      ? Math.round((payload.correctCount / answeredCount) * 100)
-                      : 0,
-                  updatedAt: new Date().toISOString(),
-                }
-              : e,
-          );
-        }
-        return [
-          ...prev,
-          {
-            studentId: payload.student.id,
-            username: payload.student.username,
-            correctCount: payload.correctCount,
-            answeredCount: 1,
-            currentQuestion: 2,
-            totalQuestions: total,
-            violationCount: 0,
-            status: "in_progress" as const,
-            accuracy: payload.correctCount > 0 ? 100 : 0,
-            updatedAt: new Date().toISOString(),
-          },
-        ];
-      });
+    s.on("leaderboard", (payload: {
+      student: { id: number; username: string };
+      correctCount: number;
+      answeredCount: number;
+      totalQuestions: number;
+    }) => {
+      setLeaderboard((prev) =>
+        applyLeaderboardAnswer(prev, payload, (p) => ({
+          studentId: p.student.id,
+          username: p.student.username,
+          correctCount: p.correctCount,
+          answeredCount: p.answeredCount,
+          totalQuestions: p.totalQuestions || totalQuestions,
+          currentQuestion: Math.min(
+            p.answeredCount + 1,
+            p.totalQuestions || totalQuestions || 1,
+          ),
+          violationCount: 0,
+          status: "in_progress" as const,
+          accuracy:
+            p.answeredCount > 0
+              ? Math.round((p.correctCount / p.answeredCount) * 100)
+              : 0,
+          updatedAt: new Date().toISOString(),
+        })),
+      );
       setLastUpdated(new Date().toISOString());
     });
 
@@ -217,8 +211,8 @@ export default function LeaderboardPage({
       }) => {
         const total = payload.totalQuestions ?? room.exam.questionCount;
         const correct = payload.correctCount ?? 0;
-        setLeaderboard((prev) =>
-          prev.map((e) =>
+        setLeaderboard((prev) => {
+          const next = prev.map((e) =>
             e.studentId === payload.student.id
               ? {
                   ...e,
@@ -232,13 +226,38 @@ export default function LeaderboardPage({
                   updatedAt: new Date().toISOString(),
                 }
               : e,
-          ),
-        );
+          );
+          return next;
+        });
         setLastUpdated(new Date().toISOString());
       },
     );
 
-    s.on("student_join", () => loadRoom());
+    s.on(
+      "student_join",
+      (payload: { id: number; username: string; attemptId?: number }) => {
+        setLeaderboard((prev) => {
+          if (prev.some((e) => e.studentId === payload.id)) return prev;
+          return [
+            ...prev,
+            {
+              studentId: payload.id,
+              attemptId: payload.attemptId,
+              username: payload.username,
+              correctCount: 0,
+              answeredCount: 0,
+              totalQuestions,
+              currentQuestion: 1,
+              violationCount: 0,
+              status: "in_progress" as const,
+              accuracy: 0,
+              updatedAt: new Date().toISOString(),
+            },
+          ];
+        });
+        setLastUpdated(new Date().toISOString());
+      },
+    );
 
     s.on("log_violation", (payload: { student: { id: number }; attemptId?: number }) => {
       setLeaderboard((prev) =>
@@ -265,20 +284,42 @@ export default function LeaderboardPage({
       });
     });
 
-    s.on("room_start", () => loadRoom());
-    s.on("room_time_up", () => loadRoom());
+    s.on("room_start", () => void loadRoom());
+    s.on("room_time_up", () => void loadRoom());
+    s.on("force_submit", () => void loadRoom());
+
+    s.on("room_ended", () => {
+      setRoom((prev) => (prev ? { ...prev, status: "FINISHED" } : prev));
+      void loadRoom();
+    });
 
     return () => {
-      s.emit("leave", roomIdentification(room.code, roomId));
+      leaveQuizSocketRoom(roomCode, roomId);
       s.off("leaderboard");
       s.off("student_submit");
       s.off("student_join");
       s.off("log_violation");
       s.off("room_start");
       s.off("room_time_up");
-      disconnectSocket();
+      s.off("force_submit");
+      s.off("room_ended");
     };
-  }, [room, roomId, loadRoom]);
+  }, [roomCode, roomId, totalQuestions, loadRoom]);
+
+  /* Đồng bộ modal chi tiết khi leaderboard cập nhật realtime */
+  useEffect(() => {
+    setSelectedStudent((prev) => {
+      if (!prev) return null;
+      return leaderboard.find((e) => e.studentId === prev.studentId) ?? prev;
+    });
+  }, [leaderboard]);
+
+  /* Fallback nhẹ khi đang thi (phòng hờ socket trễ) */
+  useEffect(() => {
+    if (roomStatus !== "ACTIVE") return;
+    const timer = setInterval(() => void loadRoom(), 8000);
+    return () => clearInterval(timer);
+  }, [roomStatus, loadRoom]);
 
   // Fetch detailed violation data when selectedStudent changes
   useEffect(() => {
@@ -588,8 +629,8 @@ export default function LeaderboardPage({
               <div className="flex flex-col items-center text-center">
                 <StudentAvatar name={selectedStudent.username} className="h-20 w-20 text-2xl border-4 ring-4 ring-zinc-200/50" />
                 <h2 className="mt-4 text-3xl font-black text-zinc-900 tracking-tight">{selectedStudent.username}</h2>
-                <div className="mt-2 flex items-center justify-center gap-2 text-xs font-bold text-zinc-500">
-                  <span className="bg-zinc-100 px-3 py-1 rounded-full">ID: {selectedStudent.studentId}</span>
+                <div className="mt-2 flex items-center justify-center gap-2 text-xs font-bold">
+                  <span className="bg-indigo-100 px-3 py-1 rounded-full text-indigo-700">ID: {selectedStudent.studentId}</span>
                   <span className={`px-3 py-1 rounded-full ${selectedStudent.status === "completed" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
                     {selectedStudent.status === "completed" ? "Đã nộp bài" : "Đang làm bài"}
                   </span>
@@ -640,31 +681,31 @@ export default function LeaderboardPage({
                 )}
 
                 <div className="mt-6 grid w-full grid-cols-2 gap-4">
-                  <div className="rounded-2xl border-2 border-[color:var(--border)] bg-zinc-50 p-4 text-center">
-                    <div className="flex items-center justify-center gap-1 text-[11px] font-black text-zinc-500 uppercase tracking-wider">
-                      <Award size={14} className="text-zinc-400" />
+                  <div className="rounded-2xl border-2 border-[color:var(--border)] bg-blue-50/50 p-4 text-center">
+                    <div className="flex items-center justify-center gap-1 text-[11px] font-black text-blue-600 uppercase tracking-wider">
+                      <Award size={14} className="text-blue-500" />
                       <span>Điểm số</span>
                     </div>
-                    <div className="mt-1 text-3xl font-black text-zinc-900">{selectedStudent.score ?? selectedStudent.correctCount}</div>
+                    <div className="mt-1 text-3xl font-black text-blue-950">{selectedStudent.score ?? selectedStudent.correctCount}</div>
                   </div>
-                  <div className="rounded-2xl border-2 border-[color:var(--border)] bg-zinc-50 p-4 text-center">
-                    <div className="flex items-center justify-center gap-1 text-[11px] font-black text-zinc-500 uppercase tracking-wider">
-                      <TrendingUp size={14} className="text-zinc-400" />
+                  <div className="rounded-2xl border-2 border-[color:var(--border)] bg-violet-50/50 p-4 text-center">
+                    <div className="flex items-center justify-center gap-1 text-[11px] font-black text-violet-600 uppercase tracking-wider">
+                      <TrendingUp size={14} className="text-violet-500" />
                       <span>Chính xác</span>
                     </div>
-                    <div className="mt-1 text-3xl font-black text-zinc-900">{selectedStudent.accuracy}%</div>
+                    <div className="mt-1 text-3xl font-black text-violet-950">{selectedStudent.accuracy}%</div>
                   </div>
-                  <div className="col-span-2 rounded-2xl border-2 border-[color:var(--border)] bg-zinc-50 p-4 text-center">
+                  <div className="col-span-2 rounded-2xl border-2 border-[color:var(--border)] bg-emerald-50/50 p-4 text-center">
                     <div className="flex justify-between items-end mb-2">
-                      <div className="flex items-center gap-1 text-[11px] font-black text-zinc-500 uppercase tracking-wider">
-                        <BarChart2 size={14} className="text-zinc-400" />
+                      <div className="flex items-center gap-1 text-[11px] font-black text-emerald-700 uppercase tracking-wider">
+                        <BarChart2 size={14} className="text-emerald-600" />
                         <span>Tiến độ câu hỏi</span>
                       </div>
-                      <div className="text-sm font-black text-zinc-900">
+                      <div className="text-sm font-black text-emerald-950">
                         {selectedStudent.answeredCount} / {selectedStudent.totalQuestions}
                       </div>
                     </div>
-                    <div className="h-3 w-full overflow-hidden rounded-full bg-zinc-200 border border-zinc-300">
+                    <div className="h-3 w-full overflow-hidden rounded-full bg-emerald-100 border border-emerald-200">
                       <div
                         className="h-full bg-emerald-500 transition-all duration-500 rounded-full"
                         style={{ width: `${selectedStudent.totalQuestions > 0 ? (selectedStudent.answeredCount / selectedStudent.totalQuestions) * 100 : 0}%` }}

@@ -9,7 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
 import { useAuth } from "@/lib/auth-context";
-import { createExam, generateAiQuestions, getExamDetail, ApiError } from "@/lib/api";
+import { createExam, generateAiQuestions, generateAiQuestionsPreview, getExamDetail, ApiError } from "@/lib/api";
 
 type TabKey = "csv" | "manual" | "ai";
 type OptionId = "A" | "B" | "C" | "D";
@@ -168,42 +168,27 @@ export default function TeacherCreateExamPage() {
 
   /* AI handler */
   const generateAiPreview = async () => {
-    if (!title.trim()) { toast.push({ title: "Vui lòng nhập tiêu đề đề thi trước", variant: "warning" }); return; }
-    const duration = Number(durationMinutes);
-    if (!duration) { toast.push({ title: "Vui lòng nhập thời lượng trước", variant: "warning" }); return; }
-
     setAiLoading(true);
     setSaveError(null);
     try {
-      // Create exam first to get ID, then generate AI questions
       const qty = Math.max(1, Math.min(50, Number(aiCount) || 5));
-      // Create a temporary exam with no questions
-      const { id: examId } = await createExam({
-        title: title.trim(),
-        description: description.trim() || undefined,
-        durationMinutes: duration,
-        questions: [],
-      });
-      // Generate AI questions into that exam
-      await generateAiQuestions(examId, aiTopic || "Chủ đề tổng hợp", aiDifficulty, qty);
-      toast.push({ title: "AI đã tạo câu hỏi!", message: "Đang tải danh sách câu hỏi...", variant: "success" });
-      // Fetch the created questions
-      const detail = await getExamDetail(examId);
-      if (detail?.questions?.length) {
-        const editorQs: EditorQuestion[] = detail.questions.map((q) => {
+      const { questions: questionsData } = await generateAiQuestionsPreview(aiTopic || "Chủ đề tổng hợp", aiDifficulty, qty);
+      
+      if (questionsData?.length) {
+        const editorQs: EditorQuestion[] = questionsData.map((q: any) => {
           const opts: Record<OptionId, string> = { A: "", B: "", C: "", D: "" };
           const optKeys: OptionId[] = ["A", "B", "C", "D"];
           let correctOpt: OptionId = "A";
-          q.options.forEach((o, idx) => {
+          q.options.forEach((o: any, idx: number) => {
             opts[optKeys[idx]] = o.content;
             if (o.isCorrect) correctOpt = optKeys[idx];
           });
-          return createEmptyQuestion({ id: String(q.id), content: q.content, options: opts, correct: correctOpt });
+          return createEmptyQuestion({ content: q.content, options: opts, correct: correctOpt });
         });
+        
         setQuestions(editorQs);
         setTab("manual");
         toast.push({ title: "Đã nạp câu hỏi AI vào editor", variant: "success" });
-        router.push(`/teacher/exams/${examId}`);
       }
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : "Lỗi tạo câu hỏi AI";
@@ -391,7 +376,7 @@ export default function TeacherCreateExamPage() {
           {/* AI tab */}
           {tab === "ai" && (
             <div className="grid gap-3">
-              <p className="text-sm text-zinc-600">AI sẽ tạo câu hỏi và lưu thẳng vào đề thi. Vui lòng nhập tiêu đề và thời lượng trước.</p>
+              <p className="text-sm text-zinc-600">AI sẽ tạo câu hỏi và đưa vào tab Manual để bạn có thể xem và chỉnh sửa trước khi lưu.</p>
               <div className="grid gap-3 sm:grid-cols-3">
                 <Input label="Chủ đề" value={aiTopic} onChange={(e) => setAiTopic(e.target.value)} placeholder="VD: Java OOP" />
                 <Input label="Số câu" type="number" min={1} max={50} value={aiCount} onChange={(e) => setAiCount(e.target.value)} />

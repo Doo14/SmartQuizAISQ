@@ -117,6 +117,20 @@ function StudentExamRunnerContent() {
       if (res?.status === "WAITING") {
         setWaitingForStart(true);
         setLoadingExam(false);
+      } else if (res?.status === "ACTIVE") {
+        setWaitingForStart(false);
+        let secsLeft = undefined;
+        if (res.endTime) {
+          const now = Date.now();
+          const end = new Date(res.endTime).getTime();
+          secsLeft = Math.max(0, Math.floor((end - now) / 1000));
+        }
+        
+        const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
+        if (storedExamId) {
+          setExamId(Number(storedExamId));
+          loadExam(Number(storedExamId), res.previousAnswers, secsLeft);
+        }
       }
     });
 
@@ -126,11 +140,12 @@ function StudentExamRunnerContent() {
       const now = Date.now();
       const end = new Date(payload.endTime).getTime();
       const secsLeft = Math.max(0, Math.floor((end - now) / 1000));
-      setTimeLeftSeconds(secsLeft);
-      setDurationMinutes(payload.durationMinutes);
-      // Load exam questions now (examId stored in sessionStorage from join page)
+      
       const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
-      if (storedExamId) loadExam(Number(storedExamId));
+      if (storedExamId) {
+        setExamId(Number(storedExamId));
+        loadExam(Number(storedExamId), undefined, secsLeft);
+      }
     });
 
     s.on("room_time_up", () => {
@@ -147,26 +162,29 @@ function StudentExamRunnerContent() {
   }, [roomId, examCode, user, authLoading]);
 
 
-  /* ── Load exam questions (only when room is ACTIVE) ─────────────── */
-  useEffect(() => {
-    if (!roomId || !user || authLoading || waitingForStart) return;
-    const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
-    if (storedExamId) {
-      const eid = Number(storedExamId);
-      setExamId(eid);
-      loadExam(eid);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId, user, authLoading, waitingForStart]);
-
-  const loadExam = async (eid: number) => {
+  const loadExam = async (eid: number, prevAnswers?: { questionId: number, selectedOptionId: number }[], initialSecsLeft?: number) => {
     try {
       const detail = await getExamDetail(eid);
       setQuestions(detail.questions);
       setExamTitle(detail.title);
       setDurationMinutes(detail.durationMinutes);
-      setTimeLeftSeconds(detail.durationMinutes * 60);
-      setAnswers(Array(detail.questions.length).fill(null));
+      
+      if (initialSecsLeft !== undefined) {
+        setTimeLeftSeconds(initialSecsLeft);
+      } else {
+        setTimeLeftSeconds(detail.durationMinutes * 60);
+      }
+
+      const initialAnswers = Array(detail.questions.length).fill(null);
+      if (prevAnswers && prevAnswers.length > 0) {
+        detail.questions.forEach((q, idx) => {
+          const pa = prevAnswers.find((a: any) => a.questionId === q.id);
+          if (pa) {
+            initialAnswers[idx] = pa.selectedOptionId;
+          }
+        });
+      }
+      setAnswers(initialAnswers);
     } catch {
       toast.push({ title: "Lỗi tải đề thi", variant: "danger" });
     } finally {

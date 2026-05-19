@@ -318,6 +318,15 @@ export async function generateAiQuestions(
   await api.post(`/exams/${examId}/generate-ai`, { topic, difficulty, quantity });
 }
 
+export async function generateAiQuestionsPreview(
+  topic: string,
+  difficulty: string,
+  quantity: number,
+): Promise<{ questions: any[] }> {
+  const envelope = await api.post<{ questions: any[] }>('/exams/generate-ai-preview', { topic, difficulty, quantity });
+  return envelope.data;
+}
+
 export async function getTeacherStats(): Promise<TeacherStats> {
   try {
     const envelope = await api.get<TeacherStats>('/exams/statistics/overview');
@@ -327,7 +336,7 @@ export async function getTeacherStats(): Promise<TeacherStats> {
   }
 }
 
-/* ── Rooms ────────────────────────────────────────────────────────────── */
+/* ── Rooms ──────────────────────────────x──────────────────────────────── */
 
 export async function getRoomsByExam(examId: number): Promise<RoomSummary[]> {
   try {
