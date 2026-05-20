@@ -47,8 +47,11 @@ function StudentExamRunnerContent() {
   const [loadingExam, setLoadingExam] = useState(true);
   const [attemptId, setAttemptId] = useState<number | null>(null);
 
-  // Socket
+  // Socket — ref tránh stale closure (room_time_up đăng ký trước khi có examId).
   const socketRef = useRef<Socket | null>(null);
+  const handleAutoSubmitRef = useRef<() => void>(() => {});
+  /** Đang làm bài thật (đã có câu hỏi) — dùng cho force_submit / room_ended, tránh emit khi chờ GV. */
+  const canAutoSubmitRef = useRef(false);
   // face-api loaded dynamically (browser only)
   const faceapiRef = useRef<FaceApiModule | null>(null);
 
@@ -79,6 +82,11 @@ function StudentExamRunnerContent() {
     () => !waitingForStart && !submitted && questions.length > 0,
     [waitingForStart, submitted, questions.length],
   );
+
+  useEffect(() => {
+    canAutoSubmitRef.current =
+      !waitingForStart && !submitted && questions.length > 0 && !loadingExam;
+  }, [waitingForStart, submitted, questions.length, loadingExam]);
 
   /* ── Auth guard ───────────────────────────────────────────────────── */
   useEffect(() => {
@@ -150,12 +158,21 @@ function StudentExamRunnerContent() {
 
     s.on("room_time_up", () => {
       toast.push({ title: "Hết giờ!", message: "Bài thi đã được nộp tự động.", variant: "warning" });
-      handleAutoSubmit();
+      handleAutoSubmitRef.current();
     });
+
+    const onServerFinalize = () => {
+      if (!canAutoSubmitRef.current) return;
+      handleAutoSubmitRef.current();
+    };
+    s.on("force_submit", onServerFinalize);
+    s.on("room_ended", onServerFinalize);
 
     return () => {
       s.off("room_start");
       s.off("room_time_up");
+      s.off("force_submit", onServerFinalize);
+      s.off("room_ended", onServerFinalize);
       disconnectSocket();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -199,7 +216,7 @@ function StudentExamRunnerContent() {
       setTimeLeftSeconds((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          handleAutoSubmit();
+          handleAutoSubmitRef.current();
           return 0;
         }
         return prev - 1;
@@ -377,6 +394,10 @@ function StudentExamRunnerContent() {
       setSubmitted(false);
     }
   }, [submitted, roomId, examId, questions.length, toast]);
+
+  useEffect(() => {
+    handleAutoSubmitRef.current = handleAutoSubmit;
+  }, [handleAutoSubmit]);
 
   const handleSubmit = () => {
     const answeredCount = answers.filter((a) => a !== null).length;
