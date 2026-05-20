@@ -134,52 +134,57 @@ function StudentExamRunnerContent() {
       return;
     }
 
-    s.emit("join", roomIdentification(examCode), (res: any) => {
-      console.log("[Student WS] join:", res);
-      if (res?.error) {
-        toast.push({ title: "Không thể vào phòng thi", message: res.error, variant: "danger" });
-        setLoadingExam(false);
-        return;
-      }
-      if (res?.attemptId) {
-        setAttemptId(res.attemptId);
-      }
-      if (res?.status === "WAITING") {
-        setWaitingForStart(true);
-        setLoadingExam(false);
-      } else if (res?.status === "ACTIVE") {
-        setWaitingForStart(false);
-        let secsLeft: number | undefined;
-        if (res.endTime) {
-          const now = Date.now();
-          const end = new Date(res.endTime).getTime();
-          secsLeft = Math.max(0, Math.floor((end - now) / 1000));
+    const handleJoin = () => {
+      s.emit("join", roomIdentification(examCode), (res: any) => {
+        console.log("[Student WS] join:", res);
+        if (res?.error) {
+          toast.push({ title: "Không thể vào phòng thi", message: res.error, variant: "danger" });
+          setLoadingExam(false);
+          return;
         }
+        if (res?.attemptId) {
+          setAttemptId(res.attemptId);
+        }
+        if (res?.status === "WAITING") {
+          setWaitingForStart(true);
+          setLoadingExam(false);
+        } else if (res?.status === "ACTIVE") {
+          setWaitingForStart(false);
+          let secsLeft: number | undefined;
+          if (res.endTime) {
+            const now = Date.now();
+            const end = new Date(res.endTime).getTime();
+            secsLeft = Math.max(0, Math.floor((end - now) / 1000));
+          }
 
-        // B4 FIX: try sessionStorage first, then fall back to API lookup by code
-        const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
-        if (storedExamId) {
-          const eid = Number(storedExamId);
-          setExamId(eid);
-          loadExam(eid, res.previousAnswers, secsLeft);
-        } else {
-          // Student navigated directly (e.g. page refresh) — resolve examId via public API
-          getRoomPublicInfo(examCode).then((info) => {
-            if (info?.examId) {
-              sessionStorage.setItem(`room_${roomId}_examId`, String(info.examId));
-              setExamId(info.examId);
-              loadExam(info.examId, res.previousAnswers, secsLeft);
-            } else {
-              toast.push({ title: "Lỗi tải đề thi", message: "Không tìm thấy thông tin phòng.", variant: "danger" });
+          // B4 FIX: try sessionStorage first, then fall back to API lookup by code
+          const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
+          if (storedExamId) {
+            const eid = Number(storedExamId);
+            setExamId(eid);
+            loadExam(eid, res.previousAnswers, secsLeft);
+          } else {
+            // Student navigated directly (e.g. page refresh) — resolve examId via public API
+            getRoomPublicInfo(examCode).then((info) => {
+              if (info?.examId) {
+                sessionStorage.setItem(`room_${roomId}_examId`, String(info.examId));
+                setExamId(info.examId);
+                loadExam(info.examId, res.previousAnswers, secsLeft);
+              } else {
+                toast.push({ title: "Lỗi tải đề thi", message: "Không tìm thấy thông tin phòng.", variant: "danger" });
+                setLoadingExam(false);
+              }
+            }).catch(() => {
+              toast.push({ title: "Lỗi tải đề thi", variant: "danger" });
               setLoadingExam(false);
-            }
-          }).catch(() => {
-            toast.push({ title: "Lỗi tải đề thi", variant: "danger" });
-            setLoadingExam(false);
-          });
+            });
+          }
         }
-      }
-    });
+      });
+    };
+
+    handleJoin();
+    s.on("connect", handleJoin);
 
     // Teacher started the exam — room is now ACTIVE
     s.on("room_start", (payload: { durationMinutes: number; endTime: string }) => {
@@ -220,6 +225,7 @@ function StudentExamRunnerContent() {
     s.on("room_ended", onServerFinalize);
 
     return () => {
+      s.off("connect", handleJoin);
       s.off("room_start");
       s.off("room_time_up");
       s.off("force_submit", onServerFinalize);
@@ -454,6 +460,8 @@ function StudentExamRunnerContent() {
     if (submitted) return;
     const q = questions[currentQuestionIndex];
     if (!q) return;
+
+    if (answers[currentQuestionIndex] === optionId) return;
 
     setAnswers((prev) => {
       const next = [...prev];
