@@ -24,6 +24,11 @@ type FaceApiModule = typeof import('@vladmandic/face-api');
 type OptionId = "A" | "B" | "C" | "D";
 type ViolationType = "tab_switch" | "keyboard_copy" | "keyboard_paste" | "camera_multiple_faces" | "camera_gaze_away" | "camera_missing";
 
+/** Quét face-api (ms) */
+const FACE_DETECT_INTERVAL_MS = 1500;
+/** Tối thiểu giữa hai báo cáo vi phạm camera cùng loại (ms) */
+const CAMERA_VIOLATION_THROTTLE_MS = 10_000;
+
 function formatTime(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
@@ -405,9 +410,7 @@ function StudentExamRunnerContent() {
           .detectAllFaces(videoRef.current, new fa.TinyFaceDetectorOptions({ inputSize: 160 }))
           .withFaceLandmarks();
         const now = Date.now();
-        // BUG FIX: increase throttle from 5s to 30s to prevent flooding server
-        // with violations when camera is intermittent or face detection is flaky.
-        if (now - lastCameraViolationTime.current > 30000) {
+        if (now - lastCameraViolationTime.current > CAMERA_VIOLATION_THROTTLE_MS) {
           if (detections.length === 0) {
             pushViolation("camera_missing", "Không tìm thấy khuôn mặt trong khung hình.");
             lastCameraViolationTime.current = now;
@@ -417,7 +420,7 @@ function StudentExamRunnerContent() {
           }
         }
       }
-    }, 3000);
+    }, FACE_DETECT_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [antiCheatActive, modelsLoaded, cameraError, pushViolation]);
 

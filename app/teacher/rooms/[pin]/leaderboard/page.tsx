@@ -317,7 +317,7 @@ export default function LeaderboardPage({
   /* Fallback nhẹ khi đang thi (phòng hờ socket trễ) */
   useEffect(() => {
     if (roomStatus !== "ACTIVE") return;
-    const timer = setInterval(() => void loadRoom(), 8000);
+    const timer = setInterval(() => void loadRoom(), 10_000);
     return () => clearInterval(timer);
   }, [roomStatus, loadRoom]);
 

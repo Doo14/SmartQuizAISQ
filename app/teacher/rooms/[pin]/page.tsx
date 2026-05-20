@@ -230,7 +230,7 @@ export default function TeacherRoomDetailPage({
 
   useEffect(() => {
     if (roomStatus !== "ACTIVE") return;
-    const timer = setInterval(() => void loadRoom(), 8000);
+    const timer = setInterval(() => void loadRoom(), 10_000);
     return () => clearInterval(timer);
   }, [roomStatus, loadRoom]);
 
