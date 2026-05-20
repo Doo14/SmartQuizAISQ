@@ -322,6 +322,11 @@ function StudentExamRunnerContent() {
     }
   }, [toast, roomId, attemptId]);
 
+  // BUG FIX: Stable ref for pushViolation to avoid re-triggering camera
+  // useEffect every time attemptId/toast changes (which recreates pushViolation).
+  const pushViolationRef = useRef(pushViolation);
+  useEffect(() => { pushViolationRef.current = pushViolation; }, [pushViolation]);
+
   /* ── Anti-cheat: camera (chỉ khi đang làm bài) ───────────────────── */
   useEffect(() => {
     if (!cameraActive) return;
@@ -358,7 +363,7 @@ function StudentExamRunnerContent() {
             setCameraError("Camera đã bị ngắt kết nối hoặc tắt.");
             if (!hasSentCameraMissingRef.current) {
               hasSentCameraMissingRef.current = true;
-              pushViolation("camera_missing", "Camera bị tắt trong quá trình làm bài.");
+              pushViolationRef.current("camera_missing", "Camera bị tắt trong quá trình làm bài.");
             }
           };
         }
@@ -367,7 +372,7 @@ function StudentExamRunnerContent() {
         setCameraError(err.message || "Không thể truy cập camera. Vui lòng cấp quyền.");
         if (!hasSentCameraMissingRef.current) {
           hasSentCameraMissingRef.current = true;
-          pushViolation("camera_missing", "Người dùng từ chối quyền truy cập camera.");
+          pushViolationRef.current("camera_missing", "Người dùng từ chối quyền truy cập camera.");
         }
       }
     };
@@ -378,7 +383,11 @@ function StudentExamRunnerContent() {
       }
       cameraStreamRef.current = null;
     };
-  }, [cameraActive, pushViolation, cameraRetryCount]);
+    // BUG FIX: removed pushViolation from deps — use pushViolationRef instead
+    // to prevent re-running this effect (and re-calling getUserMedia) when
+    // attemptId changes, which was causing duplicate violation reports.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraActive, cameraRetryCount]);
 
   useEffect(() => {
     if (!antiCheatActive || !modelsLoaded || cameraError) return;
@@ -390,7 +399,9 @@ function StudentExamRunnerContent() {
           .detectAllFaces(videoRef.current, new fa.TinyFaceDetectorOptions({ inputSize: 160 }))
           .withFaceLandmarks();
         const now = Date.now();
-        if (now - lastCameraViolationTime.current > 5000) {
+        // BUG FIX: increase throttle from 5s to 30s to prevent flooding server
+        // with violations when camera is intermittent or face detection is flaky.
+        if (now - lastCameraViolationTime.current > 30000) {
           if (detections.length === 0) {
             pushViolation("camera_missing", "Không tìm thấy khuôn mặt trong khung hình.");
             lastCameraViolationTime.current = now;
