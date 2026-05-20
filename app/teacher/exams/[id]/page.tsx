@@ -71,6 +71,14 @@ export default function TeacherExamDetailPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, authLoading, id]);
 
+  /* Tự làm mới danh sách phòng đang ACTIVE (phòng hết giờ chuyển FINISHED trên server) */
+  useEffect(() => {
+    const hasActive = rooms.some((r) => r.status === "ACTIVE");
+    if (!hasActive) return;
+    const timer = setInterval(() => void reload(), 10000);
+    return () => clearInterval(timer);
+  }, [rooms, reload]);
+
   const handleCreateRoom = async () => {
     try {
       const room = await createRoom(Number(id));

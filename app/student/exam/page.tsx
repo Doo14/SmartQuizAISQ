@@ -47,8 +47,11 @@ function StudentExamRunnerContent() {
   const [loadingExam, setLoadingExam] = useState(true);
   const [attemptId, setAttemptId] = useState<number | null>(null);
 
-  // Socket
+  // Socket — ref tránh stale closure (room_time_up đăng ký trước khi có examId).
   const socketRef = useRef<Socket | null>(null);
+  const handleAutoSubmitRef = useRef<() => void>(() => {});
+  /** Đang làm bài thật (đã có câu hỏi) — dùng cho force_submit / room_ended, tránh emit khi chờ GV. */
+  const canAutoSubmitRef = useRef(false);
   // face-api loaded dynamically (browser only)
   const faceapiRef = useRef<FaceApiModule | null>(null);
 
@@ -73,6 +76,17 @@ function StudentExamRunnerContent() {
   const [result, setResult] = useState<{ correctCount: number; total: number; score: number } | null>(null);
   // Waiting for teacher to start the room
   const [waitingForStart, setWaitingForStart] = useState(false);
+
+  /** Chỉ giám sát khi đang làm bài — không tính vi phạm lúc chờ GV hoặc đang tải đề. */
+  const antiCheatActive = useMemo(
+    () => !waitingForStart && !submitted && questions.length > 0,
+    [waitingForStart, submitted, questions.length],
+  );
+
+  useEffect(() => {
+    canAutoSubmitRef.current =
+      !waitingForStart && !submitted && questions.length > 0 && !loadingExam;
+  }, [waitingForStart, submitted, questions.length, loadingExam]);
 
   /* ── Auth guard ───────────────────────────────────────────────────── */
   useEffect(() => {
@@ -111,6 +125,20 @@ function StudentExamRunnerContent() {
       if (res?.status === "WAITING") {
         setWaitingForStart(true);
         setLoadingExam(false);
+      } else if (res?.status === "ACTIVE") {
+        setWaitingForStart(false);
+        let secsLeft = undefined;
+        if (res.endTime) {
+          const now = Date.now();
+          const end = new Date(res.endTime).getTime();
+          secsLeft = Math.max(0, Math.floor((end - now) / 1000));
+        }
+        
+        const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
+        if (storedExamId) {
+          setExamId(Number(storedExamId));
+          loadExam(Number(storedExamId), res.previousAnswers, secsLeft);
+        }
       }
     });
 
@@ -120,47 +148,60 @@ function StudentExamRunnerContent() {
       const now = Date.now();
       const end = new Date(payload.endTime).getTime();
       const secsLeft = Math.max(0, Math.floor((end - now) / 1000));
-      setTimeLeftSeconds(secsLeft);
-      setDurationMinutes(payload.durationMinutes);
-      // Load exam questions now (examId stored in sessionStorage from join page)
+      
       const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
-      if (storedExamId) loadExam(Number(storedExamId));
+      if (storedExamId) {
+        setExamId(Number(storedExamId));
+        loadExam(Number(storedExamId), undefined, secsLeft);
+      }
     });
 
     s.on("room_time_up", () => {
       toast.push({ title: "Hết giờ!", message: "Bài thi đã được nộp tự động.", variant: "warning" });
-      handleAutoSubmit();
+      handleAutoSubmitRef.current();
     });
+
+    const onServerFinalize = () => {
+      if (!canAutoSubmitRef.current) return;
+      handleAutoSubmitRef.current();
+    };
+    s.on("force_submit", onServerFinalize);
+    s.on("room_ended", onServerFinalize);
 
     return () => {
       s.off("room_start");
       s.off("room_time_up");
+      s.off("force_submit", onServerFinalize);
+      s.off("room_ended", onServerFinalize);
       disconnectSocket();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, examCode, user, authLoading]);
 
 
-  /* ── Load exam questions (only when room is ACTIVE) ─────────────── */
-  useEffect(() => {
-    if (!roomId || !user || authLoading || waitingForStart) return;
-    const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
-    if (storedExamId) {
-      const eid = Number(storedExamId);
-      setExamId(eid);
-      loadExam(eid);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId, user, authLoading, waitingForStart]);
-
-  const loadExam = async (eid: number) => {
+  const loadExam = async (eid: number, prevAnswers?: { questionId: number, selectedOptionId: number }[], initialSecsLeft?: number) => {
     try {
       const detail = await getExamDetail(eid);
       setQuestions(detail.questions);
       setExamTitle(detail.title);
       setDurationMinutes(detail.durationMinutes);
-      setTimeLeftSeconds(detail.durationMinutes * 60);
-      setAnswers(Array(detail.questions.length).fill(null));
+      
+      if (initialSecsLeft !== undefined) {
+        setTimeLeftSeconds(initialSecsLeft);
+      } else {
+        setTimeLeftSeconds(detail.durationMinutes * 60);
+      }
+
+      const initialAnswers = Array(detail.questions.length).fill(null);
+      if (prevAnswers && prevAnswers.length > 0) {
+        detail.questions.forEach((q, idx) => {
+          const pa = prevAnswers.find((a: any) => a.questionId === q.id);
+          if (pa) {
+            initialAnswers[idx] = pa.selectedOptionId;
+          }
+        });
+      }
+      setAnswers(initialAnswers);
     } catch {
       toast.push({ title: "Lỗi tải đề thi", variant: "danger" });
     } finally {
@@ -175,7 +216,7 @@ function StudentExamRunnerContent() {
       setTimeLeftSeconds((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          handleAutoSubmit();
+          handleAutoSubmitRef.current();
           return 0;
         }
         return prev - 1;
@@ -210,8 +251,9 @@ function StudentExamRunnerContent() {
     }
   }, [toast, roomId, attemptId]);
 
-  /* ── Anti-cheat: camera ─────────────────────────────────────────── */
+  /* ── Anti-cheat: camera (chỉ khi đang làm bài) ───────────────────── */
   useEffect(() => {
+    if (!antiCheatActive) return;
     const loadModels = async () => {
       try {
         // Dynamic import to avoid SSR TextEncoder issue
@@ -227,11 +269,11 @@ function StudentExamRunnerContent() {
         setCameraError(`Lỗi tải AI: ${err.message || err}`);
       }
     };
-    loadModels();
-  }, []);
+    void loadModels();
+  }, [antiCheatActive]);
 
   useEffect(() => {
-    if (!modelsLoaded) return;
+    if (!antiCheatActive || !modelsLoaded) return;
     let stream: MediaStream | null = null;
     const startVideo = async () => {
       try {
@@ -242,12 +284,12 @@ function StudentExamRunnerContent() {
         pushViolation("camera_missing", "Người dùng từ chối quyền truy cập camera.");
       }
     };
-    startVideo();
+    void startVideo();
     return () => { stream?.getTracks().forEach((t) => t.stop()); };
-  }, [modelsLoaded, pushViolation]);
+  }, [antiCheatActive, modelsLoaded, pushViolation]);
 
   useEffect(() => {
-    if (!modelsLoaded || cameraError) return;
+    if (!antiCheatActive || !modelsLoaded || cameraError) return;
     const fa = faceapiRef.current;
     if (!fa) return;
     const interval = window.setInterval(async () => {
@@ -268,19 +310,21 @@ function StudentExamRunnerContent() {
       }
     }, 3000);
     return () => clearInterval(interval);
-  }, [modelsLoaded, cameraError, pushViolation]);
+  }, [antiCheatActive, modelsLoaded, cameraError, pushViolation]);
 
-  /* ── Anti-cheat: tab / keyboard / context ───────────────────────── */
+  /* ── Anti-cheat: tab / keyboard / context (chỉ khi đang làm bài) ─── */
   useEffect(() => {
+    if (!antiCheatActive) return;
     const onVisibility = () => {
       if (document.visibilityState === "hidden")
         pushViolation("tab_switch", "Bạn vừa rời khỏi tab làm bài.");
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, [pushViolation]);
+  }, [antiCheatActive, pushViolation]);
 
   useEffect(() => {
+    if (!antiCheatActive) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "c") {
         e.preventDefault();
@@ -293,13 +337,14 @@ function StudentExamRunnerContent() {
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [pushViolation]);
+  }, [antiCheatActive, pushViolation]);
 
   useEffect(() => {
+    if (!antiCheatActive) return;
     const onCtxMenu = (e: MouseEvent) => e.preventDefault();
     document.addEventListener("contextmenu", onCtxMenu);
     return () => document.removeEventListener("contextmenu", onCtxMenu);
-  }, []);
+  }, [antiCheatActive]);
 
   /* ── Select answer ──────────────────────────────────────────────── */
   const handleSelectOption = (optionId: number) => {
@@ -349,6 +394,10 @@ function StudentExamRunnerContent() {
       setSubmitted(false);
     }
   }, [submitted, roomId, examId, questions.length, toast]);
+
+  useEffect(() => {
+    handleAutoSubmitRef.current = handleAutoSubmit;
+  }, [handleAutoSubmit]);
 
   const handleSubmit = () => {
     const answeredCount = answers.filter((a) => a !== null).length;

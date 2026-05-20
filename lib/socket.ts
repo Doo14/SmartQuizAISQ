@@ -62,5 +62,13 @@ export function disconnectSocket() {
   }
 }
 
+/** Rời phòng WS nhưng giữ kết nối — dùng khi chuyển trang giáo viên trong cùng phiên. */
+export function leaveQuizSocketRoom(code: string, roomId?: number) {
+  const s = getSocket();
+  if (s.connected) {
+    s.emit("leave", roomIdentification(code, roomId));
+  }
+}
+
 // Re-export Socket type for convenience
 export type { Socket };
