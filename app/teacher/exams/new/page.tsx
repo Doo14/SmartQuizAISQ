@@ -173,7 +173,7 @@ export default function TeacherCreateExamPage() {
     try {
       const qty = Math.max(1, Math.min(50, Number(aiCount) || 5));
       const { questions: questionsData } = await generateAiQuestionsPreview(aiTopic || "Chủ đề tổng hợp", aiDifficulty, qty);
-      
+
       if (questionsData?.length) {
         const editorQs: EditorQuestion[] = questionsData.map((q: any) => {
           const opts: Record<OptionId, string> = { A: "", B: "", C: "", D: "" };
@@ -185,7 +185,7 @@ export default function TeacherCreateExamPage() {
           });
           return createEmptyQuestion({ content: q.content, options: opts, correct: correctOpt });
         });
-        
+
         setQuestions(editorQs);
         setTab("manual");
         toast.push({ title: "Đã nạp câu hỏi AI vào editor", variant: "success" });
@@ -250,7 +250,6 @@ export default function TeacherCreateExamPage() {
             <h1 className="text-2xl font-black text-zinc-900">Tạo đề thi</h1>
             <p className="mt-1 text-sm text-zinc-600">Nhập metadata, soạn câu hỏi bằng Manual, import CSV hoặc AI.</p>
           </div>
-          <Badge variant="success">Kết nối backend</Badge>
         </div>
 
         {/* Metadata */}
@@ -322,9 +321,6 @@ export default function TeacherCreateExamPage() {
           {/* Manual tab */}
           {tab === "manual" && (
             <div className="grid gap-4">
-              <div className="flex justify-end">
-                <Button type="button" onClick={addQuestion}>+ Thêm câu hỏi</Button>
-              </div>
               {questions.map((q, index) => (
                 <div key={q.id} className="brutal-card rounded-2xl p-4">
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -370,6 +366,9 @@ export default function TeacherCreateExamPage() {
                   </div>
                 </div>
               ))}
+              <div className="flex justify-end mt-2">
+                <Button type="button" onClick={addQuestion}>+ Thêm câu hỏi</Button>
+              </div>
             </div>
           )}
 

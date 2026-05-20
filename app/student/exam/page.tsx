@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useToast } from "@/components/ui/toast";
 import { useAuth } from "@/lib/auth-context";
-import { getExamDetail, type Question } from "@/lib/api";
+import { getExamDetail, getRoomPublicInfo, type Question } from "@/lib/api";
 import {
   connectSocket,
   disconnectSocket,
@@ -33,7 +33,8 @@ function formatTime(totalSeconds: number): string {
 function StudentExamRunnerContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const toast = useToast();
+  const { push: toastPush } = useToast();
+  const toast = useMemo(() => ({ push: toastPush }), [toastPush]);
   const { user, loading: authLoading } = useAuth();
 
   const roomId = Number(searchParams.get("roomId") ?? "0");
@@ -50,6 +51,12 @@ function StudentExamRunnerContent() {
   // Socket — ref tránh stale closure (room_time_up đăng ký trước khi có examId).
   const socketRef = useRef<Socket | null>(null);
   const handleAutoSubmitRef = useRef<() => void>(() => {});
+  // B5 FIX: track examId in a ref so handleAutoSubmit always reads the latest value
+  const examIdRef = useRef<number | null>(null);
+
+  // Keep examIdRef in sync for closures that fire before React re-renders (e.g. auto-submit)
+  useEffect(() => { examIdRef.current = examId; }, [examId]);
+
   /** Đang làm bài thật (đã có câu hỏi) — dùng cho force_submit / room_ended, tránh emit khi chờ GV. */
   const canAutoSubmitRef = useRef(false);
   // face-api loaded dynamically (browser only)
@@ -60,6 +67,7 @@ function StudentExamRunnerContent() {
   const [timeLeftSeconds, setTimeLeftSeconds] = useState(0);
   const [answers, setAnswers] = useState<Array<number | null>>([]); // optionId (number)
   const [submitted, setSubmitted] = useState(false);
+  const submittingRef = useRef(false);
   const [warningMessage, setWarningMessage] = useState<string | null>(null);
   const [violationCounts, setViolationCounts] = useState<Record<ViolationType, number>>({
     tab_switch: 0, keyboard_copy: 0, keyboard_paste: 0,
@@ -67,9 +75,18 @@ function StudentExamRunnerContent() {
   });
 
   // Camera
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const hasSentCameraMissingRef = useRef(false);
+  const setVideoRef = useCallback((node: HTMLVideoElement | null) => {
+    videoRef.current = node;
+    if (node && cameraStreamRef.current) {
+      node.srcObject = cameraStreamRef.current;
+    }
+  }, []);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [cameraRetryCount, setCameraRetryCount] = useState(0);
   const lastCameraViolationTime = useRef(0);
 
   // Result state (shown after submit)
@@ -81,6 +98,11 @@ function StudentExamRunnerContent() {
   const antiCheatActive = useMemo(
     () => !waitingForStart && !submitted && questions.length > 0,
     [waitingForStart, submitted, questions.length],
+  );
+
+  const cameraActive = useMemo(
+    () => !submitted && !loadingExam,
+    [submitted, loadingExam],
   );
 
   useEffect(() => {
@@ -127,17 +149,34 @@ function StudentExamRunnerContent() {
         setLoadingExam(false);
       } else if (res?.status === "ACTIVE") {
         setWaitingForStart(false);
-        let secsLeft = undefined;
+        let secsLeft: number | undefined;
         if (res.endTime) {
           const now = Date.now();
           const end = new Date(res.endTime).getTime();
           secsLeft = Math.max(0, Math.floor((end - now) / 1000));
         }
-        
+
+        // B4 FIX: try sessionStorage first, then fall back to API lookup by code
         const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
         if (storedExamId) {
-          setExamId(Number(storedExamId));
-          loadExam(Number(storedExamId), res.previousAnswers, secsLeft);
+          const eid = Number(storedExamId);
+          setExamId(eid);
+          loadExam(eid, res.previousAnswers, secsLeft);
+        } else {
+          // Student navigated directly (e.g. page refresh) — resolve examId via public API
+          getRoomPublicInfo(examCode).then((info) => {
+            if (info?.examId) {
+              sessionStorage.setItem(`room_${roomId}_examId`, String(info.examId));
+              setExamId(info.examId);
+              loadExam(info.examId, res.previousAnswers, secsLeft);
+            } else {
+              toast.push({ title: "Lỗi tải đề thi", message: "Không tìm thấy thông tin phòng.", variant: "danger" });
+              setLoadingExam(false);
+            }
+          }).catch(() => {
+            toast.push({ title: "Lỗi tải đề thi", variant: "danger" });
+            setLoadingExam(false);
+          });
         }
       }
     });
@@ -148,11 +187,23 @@ function StudentExamRunnerContent() {
       const now = Date.now();
       const end = new Date(payload.endTime).getTime();
       const secsLeft = Math.max(0, Math.floor((end - now) / 1000));
-      
+
       const storedExamId = sessionStorage.getItem(`room_${roomId}_examId`);
       if (storedExamId) {
-        setExamId(Number(storedExamId));
-        loadExam(Number(storedExamId), undefined, secsLeft);
+        const eid = Number(storedExamId);
+        setExamId(eid);
+        loadExam(eid, undefined, secsLeft);
+      } else {
+        // B4 FIX: fall back to API if sessionStorage was cleared
+        getRoomPublicInfo(examCode).then((info) => {
+          if (info?.examId) {
+            sessionStorage.setItem(`room_${roomId}_examId`, String(info.examId));
+            setExamId(info.examId);
+            loadExam(info.examId, undefined, secsLeft);
+          }
+        }).catch(() => {
+          toast.push({ title: "Lỗi tải đề thi", variant: "danger" });
+        });
       }
     });
 
@@ -209,22 +260,42 @@ function StudentExamRunnerContent() {
     }
   };
 
-  /* ── Timer ──────────────────────────────────────────────────────── */
+  /* ── Timer ────────────────────────────────────────────────────────────── */
+  // B11 FIX: Use a ref for the timer ID to avoid multiple concurrent intervals.
+  // The old dependency [timeLeftSeconds > 0, submitted] was a boolean expression
+  // that only triggered on 0↔positive transition, causing duplicate timers on re-renders.
+  const timerRef = useRef<any>(null);
+
   useEffect(() => {
+    // Always clear any existing timer before (re-)starting
+    if (timerRef.current !== null) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
     if (timeLeftSeconds <= 0 || submitted) return;
-    const timer = window.setInterval(() => {
+
+    timerRef.current = window.setInterval(() => {
       setTimeLeftSeconds((prev) => {
         if (prev <= 1) {
-          clearInterval(timer);
+          if (timerRef.current !== null) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+          }
           handleAutoSubmitRef.current();
           return 0;
         }
         return prev - 1;
       });
     }, 1000);
-    return () => clearInterval(timer);
+
+    return () => {
+      if (timerRef.current !== null) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timeLeftSeconds > 0, submitted]);
+  }, [timeLeftSeconds > 0 && !submitted]);
 
   /* ── Violation reporting ─────────────────────────────────────────── */
   const pushViolation = useCallback((type: ViolationType, description: string) => {
@@ -253,7 +324,7 @@ function StudentExamRunnerContent() {
 
   /* ── Anti-cheat: camera (chỉ khi đang làm bài) ───────────────────── */
   useEffect(() => {
-    if (!antiCheatActive) return;
+    if (!cameraActive) return;
     const loadModels = async () => {
       try {
         // Dynamic import to avoid SSR TextEncoder issue
@@ -270,23 +341,44 @@ function StudentExamRunnerContent() {
       }
     };
     void loadModels();
-  }, [antiCheatActive]);
+  }, [cameraActive]);
 
   useEffect(() => {
-    if (!antiCheatActive || !modelsLoaded) return;
+    if (!cameraActive) return;
     let stream: MediaStream | null = null;
     const startVideo = async () => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        cameraStreamRef.current = stream;
+        hasSentCameraMissingRef.current = false;
         if (videoRef.current) videoRef.current.srcObject = stream;
-      } catch {
-        setCameraError("Không thể truy cập camera. Vui lòng cấp quyền.");
-        pushViolation("camera_missing", "Người dùng từ chối quyền truy cập camera.");
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) {
+          videoTrack.onended = () => {
+            setCameraError("Camera đã bị ngắt kết nối hoặc tắt.");
+            if (!hasSentCameraMissingRef.current) {
+              hasSentCameraMissingRef.current = true;
+              pushViolation("camera_missing", "Camera bị tắt trong quá trình làm bài.");
+            }
+          };
+        }
+        setCameraError(null);
+      } catch (err: any) {
+        setCameraError(err.message || "Không thể truy cập camera. Vui lòng cấp quyền.");
+        if (!hasSentCameraMissingRef.current) {
+          hasSentCameraMissingRef.current = true;
+          pushViolation("camera_missing", "Người dùng từ chối quyền truy cập camera.");
+        }
       }
     };
     void startVideo();
-    return () => { stream?.getTracks().forEach((t) => t.stop()); };
-  }, [antiCheatActive, modelsLoaded, pushViolation]);
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach((t) => t.stop());
+      }
+      cameraStreamRef.current = null;
+    };
+  }, [cameraActive, pushViolation, cameraRetryCount]);
 
   useEffect(() => {
     if (!antiCheatActive || !modelsLoaded || cameraError) return;
@@ -370,10 +462,15 @@ function StudentExamRunnerContent() {
 
   /* ── Submit ─────────────────────────────────────────────────────── */
   const handleAutoSubmit = useCallback(() => {
-    if (submitted) return;
+    if (submitted || submittingRef.current) return;
+    submittingRef.current = true;
     setSubmitted(true);
-    if (socketRef.current && roomId && examId) {
-      socketRef.current.emit("submit", { roomId, examId }, (res: any) => {
+
+    const currentExamId = examIdRef.current; // B5 FIX: read latest examId via ref
+    const currentSocket = socketRef.current;
+
+    if (currentSocket && roomId && currentExamId) {
+      currentSocket.emit("submit", { roomId, examId: currentExamId }, (res: any) => {
         console.log("[Student WS] submit callback:", res);
         if (res?.error) {
           toast.push({
@@ -382,6 +479,7 @@ function StudentExamRunnerContent() {
             variant: "danger",
           });
           setSubmitted(false);
+          submittingRef.current = false;
           return;
         }
         const correctCount = res?.correctCount ?? 0;
@@ -390,10 +488,11 @@ function StudentExamRunnerContent() {
         setResult({ correctCount, total, score });
       });
     } else {
-      toast.push({ title: "Mất kết nối", message: "Không thể nộp bài. Vui lòng thử lại.", variant: "danger" });
-      setSubmitted(false);
+      // B5 FIX: examId is null (e.g. page refreshed before exam loaded).
+      // Server already force-submitted — show a submitted screen rather than blocking.
+      setResult({ correctCount: 0, total: questions.length, score: 0 });
     }
-  }, [submitted, roomId, examId, questions.length, toast]);
+  }, [submitted, roomId, questions.length, toast]);
 
   useEffect(() => {
     handleAutoSubmitRef.current = handleAutoSubmit;
@@ -417,6 +516,37 @@ function StudentExamRunnerContent() {
   const OPTION_LABELS: OptionId[] = ["A", "B", "C", "D"];
 
   const totalViolations = Object.values(violationCounts).reduce((a, b) => a + b, 0);
+
+  /* ── Camera check blocking screen ───────────────────────────────── */
+  if (cameraError) {
+    return (
+      <AppShell title="Student Dashboard" subtitle="Yêu cầu kết nối Camera" nav={[]}>
+        <div className="flex flex-col items-center justify-center gap-6 py-20 max-w-md mx-auto text-center">
+          <div className="grid h-20 w-20 place-items-center rounded-2xl border-4 border-[color:var(--border)] bg-[#FFD6DD] text-4xl shadow-[6px_6px_0_#1a1a1a]">
+            📷
+          </div>
+          <div>
+            <h2 className="text-2xl font-black text-red-600">Yêu cầu quyền truy cập Camera</h2>
+            <p className="mt-3 text-sm text-zinc-600 leading-relaxed">
+              Hệ thống giám sát thi cử yêu cầu kết nối camera hoạt động để xác minh danh tính và chống gian lận. Bạn không thể làm bài nếu không bật camera.
+            </p>
+            <p className="mt-2 text-xs font-bold text-red-500 bg-[#FFD6DD] border-2 border-red-300 rounded-xl p-2.5">
+              Chi tiết lỗi: {cameraError}
+            </p>
+          </div>
+          <button
+            onClick={() => {
+              setCameraError(null);
+              setCameraRetryCount((prev) => prev + 1);
+            }}
+            className="w-full rounded-2xl border-2 border-[color:var(--border)] bg-[color:var(--primary)] px-6 py-3 text-sm font-bold text-white shadow-[4px_4px_0_#1a1a1a] transition hover:shadow-[6px_6px_0_#1a1a1a] active:translate-y-0.5"
+          >
+            Thử lại
+          </button>
+        </div>
+      </AppShell>
+    );
+  }
 
   /* ── Waiting for teacher to start ───────────────────────────────── */
   if (waitingForStart) {
@@ -540,7 +670,7 @@ function StudentExamRunnerContent() {
             {/* Camera */}
             <Card title="Camera giám sát">
               <div className="relative aspect-video w-full overflow-hidden rounded-xl border-2 border-[color:var(--border)] bg-zinc-900">
-                <video ref={videoRef} autoPlay muted playsInline className="h-full w-full object-cover" />
+                <video ref={setVideoRef} autoPlay muted playsInline className="h-full w-full object-cover" />
                 {cameraError && (
                   <div className="absolute inset-0 flex items-center justify-center bg-zinc-900/80 p-3 text-center text-xs text-red-400">
                     {cameraError}

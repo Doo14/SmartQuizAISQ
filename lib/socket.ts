@@ -60,6 +60,9 @@ export function disconnectSocket() {
   if (socket?.connected) {
     socket.disconnect();
   }
+  // B8 FIX: reset singleton so next getSocket() creates a fresh connection
+  // (prevents stale socket reuse after logout + re-login)
+  socket = null;
 }
 
 /** Rời phòng WS nhưng giữ kết nối — dùng khi chuyển trang giáo viên trong cùng phiên. */

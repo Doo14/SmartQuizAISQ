@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, use } from "react";
+import { useEffect, useState, useCallback, use, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
@@ -53,7 +53,7 @@ export default function TeacherRoomDetailPage({
   const { pin: roomIdStr } = use(params);
   const roomId = Number(roomIdStr);
   const router = useRouter();
-  const toast = useToast();
+  const { push: toastPush } = useToast();
   const { user, loading: authLoading } = useAuth();
 
   const [room, setRoom] = useState<RoomDetail | null>(null);
@@ -61,6 +61,7 @@ export default function TeacherRoomDetailPage({
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
+  const existingStudentIdsRef = useRef<Set<number>>(new Set());
 
   /* Load room data */
   const loadRoom = useCallback(async () => {
@@ -78,12 +79,14 @@ export default function TeacherRoomDetailPage({
         status: a.submittedAt ? "completed" : "in_progress",
       }));
       setLeaderboard(lb);
+      // Initialize existing student IDs ref
+      existingStudentIdsRef.current = new Set(r.attempts.map((a) => a.studentId));
     } catch {
-      toast.push({ title: "Không thể tải thông tin phòng thi", variant: "danger" });
+      toastPush({ title: "Không thể tải thông tin phòng thi", variant: "danger" });
     } finally {
       setLoading(false);
     }
-  }, [roomId, toast]);
+  }, [roomId, toastPush]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -104,12 +107,15 @@ export default function TeacherRoomDetailPage({
 
     s.emit("join", roomIdentification(roomCode, roomId), (res: { error?: string }) => {
       if (res?.error) {
-        toast.push({ title: "Lỗi kết nối phòng thi", message: res.error, variant: "danger" });
+        toastPush({ title: "Lỗi kết nối phòng thi", message: res.error, variant: "danger" });
       }
     });
 
     s.on("student_join", (payload: { username: string; id: number; attemptId?: number }) => {
-      toast.push({ title: `${payload.username} đã vào phòng`, variant: "success" });
+      if (!existingStudentIdsRef.current.has(payload.id)) {
+        existingStudentIdsRef.current.add(payload.id);
+        toastPush({ title: `${payload.username} đã vào phòng`, variant: "success" });
+      }
       setLeaderboard((prev) => {
         if (prev.some((e) => e.studentId === payload.id)) return prev;
         return [
@@ -127,7 +133,7 @@ export default function TeacherRoomDetailPage({
     });
 
     s.on("room_start", (payload: { startTime: string; endTime: string; durationMinutes: number }) => {
-      toast.push({ title: "Phòng thi đã bắt đầu!", message: `Thời gian: ${payload.durationMinutes} phút`, variant: "success" });
+      toastPush({ title: "Phòng thi đã bắt đầu!", message: `Thời gian: ${payload.durationMinutes} phút`, variant: "success" });
       void loadRoom();
     });
 
@@ -170,7 +176,7 @@ export default function TeacherRoomDetailPage({
     );
 
     s.on("student_submit", (payload: { student: { id: number; username: string }; correctCount?: number; totalQuestions?: number }) => {
-      toast.push({ title: `${payload.student.username} đã nộp bài`, variant: "success" });
+      toastPush({ title: `${payload.student.username} đã nộp bài`, variant: "success" });
       setLeaderboard((prev) =>
         prev.map((e) =>
           e.studentId === payload.student.id
@@ -186,7 +192,7 @@ export default function TeacherRoomDetailPage({
     });
 
     s.on("room_time_up", () => {
-      toast.push({ title: "Hết giờ!", message: "Phòng thi đã kết thúc.", variant: "warning" });
+      toastPush({ title: "Hết giờ!", message: "Phòng thi đã kết thúc.", variant: "warning" });
       void loadRoom();
     });
 
@@ -199,7 +205,7 @@ export default function TeacherRoomDetailPage({
 
     s.on("log_violation", (payload: { student: { id: number; username: string }; violationType?: string; type?: string }) => {
       const vtype = payload.violationType ?? payload.type ?? "vi phạm";
-      toast.push({ title: `Vi phạm: ${payload.student.username}`, message: vtype, variant: "danger" });
+      toastPush({ title: `Vi phạm: ${payload.student.username}`, message: vtype, variant: "danger" });
       setLeaderboard((prev) =>
         prev.map((e) =>
           e.studentId === payload.student.id
@@ -220,7 +226,7 @@ export default function TeacherRoomDetailPage({
       s.off("force_submit");
       s.off("room_ended");
     };
-  }, [roomCode, roomId, loadRoom, toast]);
+  }, [roomCode, roomId, loadRoom, toastPush]);
 
   useEffect(() => {
     if (roomStatus !== "ACTIVE") return;
@@ -231,14 +237,14 @@ export default function TeacherRoomDetailPage({
   const handleStart = () => {
     if (!socket || !room) return;
     if (!socket.connected) {
-      toast.push({ title: "Chưa kết nối", message: "Đang kết nối lại máy chủ...", variant: "warning" });
+      toastPush({ title: "Chưa kết nối", message: "Đang kết nối lại máy chủ...", variant: "warning" });
       connectSocket();
       return;
     }
     socket.emit("start", roomIdentification(room.code, roomId), (res: unknown) => {
       console.log("[Teacher WS] start:", res);
       if (res === "Room started") {
-        toast.push({ title: "Đã bắt đầu phòng thi!", variant: "success" });
+        toastPush({ title: "Đã bắt đầu phòng thi!", variant: "success" });
         loadRoom();
       } else {
         const message =
@@ -247,7 +253,7 @@ export default function TeacherRoomDetailPage({
             : (res as { error?: string; message?: string })?.error ??
               (res as { message?: string })?.message ??
               "Không thể bắt đầu phòng thi";
-        toast.push({ title: "Lỗi", message, variant: "danger" });
+        toastPush({ title: "Lỗi", message, variant: "danger" });
       }
     });
   };
@@ -315,7 +321,7 @@ export default function TeacherRoomDetailPage({
                   variant="secondary"
                   onClick={() => {
                     navigator.clipboard.writeText(room.code);
-                    toast.push({ title: "Đã copy!", message: "PIN đã copy vào clipboard.", variant: "success" });
+                    toastPush({ title: "Đã copy!", message: "PIN đã copy vào clipboard.", variant: "success" });
                   }}
                 >
                   Copy PIN

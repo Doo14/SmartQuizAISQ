@@ -51,8 +51,10 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   const clear = React.useCallback(() => setItems([]), []);
 
+  const value = React.useMemo(() => ({ push, clear }), [push, clear]);
+
   return (
-    <ToastContext.Provider value={{ push, clear }}>
+    <ToastContext.Provider value={value}>
       {children}
       <div className="pointer-events-none fixed right-4 top-4 z-50 grid w-[360px] max-w-[calc(100vw-2rem)] gap-2">
         {items.map((item) => (

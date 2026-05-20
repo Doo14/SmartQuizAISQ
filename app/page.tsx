@@ -41,9 +41,6 @@ export default function Home() {
               <ButtonLink href="/register" size="lg">
                 Bắt đầu ngay
               </ButtonLink>
-              <ButtonLink href="/teacher" variant="secondary" size="lg">
-                Xem demo
-              </ButtonLink>
             </div>
           </div>
         </section>
@@ -150,9 +147,9 @@ export default function Home() {
             <h2 className="text-center text-2xl font-black text-white sm:text-3xl">Câu hỏi thường gặp</h2>
             <div className="mx-auto mt-10 max-w-2xl grid gap-4">
               <div className="rounded-2xl border-2 border-[color:var(--border)] bg-white px-6 py-5 shadow-[5px_5px_0_#1a1a1a]">
-                <div className="font-bold text-zinc-900">Đây là demo UI hay sản phẩm thật?</div>
+                <div className="font-bold text-zinc-900">Đây là hệ thống hoàn chỉnh hay bản thử nghiệm?</div>
                 <p className="mt-2 text-sm text-zinc-600">
-                  Hiện tại là demo UI với localStorage. Backend Spring Boot sẽ được tích hợp trong Sprint 2–3.
+                  Đây là hệ thống thi trực tuyến hoàn chỉnh tích hợp API NestJS, Next.js (Turbopack), cơ sở dữ liệu PostgreSQL và tính năng AI / Face Detection thời gian thực.
                 </p>
               </div>
               <div className="rounded-2xl border-2 border-[color:var(--border)] bg-white px-6 py-5 shadow-[5px_5px_0_#1a1a1a]">
@@ -176,7 +173,7 @@ export default function Home() {
           <div className="container-app py-16 sm:py-20 text-center">
             <h2 className="text-2xl font-black text-zinc-900 sm:text-3xl">Sẵn sàng thử?</h2>
             <p className="mx-auto mt-3 max-w-md text-base text-zinc-600">
-              Không cần cài đặt. Truy cập ngay demo Teacher hoặc Student UI.
+              Đăng ký tài khoản để bắt đầu tạo phòng thi và quản lý học viên ngay hôm nay.
             </p>
             <div className="mt-8">
               <ButtonLink href="/register" size="lg">
